@@ -29,14 +29,21 @@ class Triangle {
   }
 }
 
-function drawTriangle(vertices) {
+function drawTriangle(vertices, color) {
   if (!g_vertexBuffer) {
     g_vertexBuffer = gl.createBuffer();
   }
-
+  const r = color[0], g = color[1], b = color[2], a = color[3];
+  const d = new Float32Array([
+    vertices[0], vertices[1], r, g, b, a,
+    vertices[2], vertices[3], r, g, b, a,
+    vertices[4], vertices[5], r, g, b, a,
+  ]);
   gl.bindBuffer(gl.ARRAY_BUFFER, g_vertexBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
-  gl.vertexAttribPointer(a_Position, 2, gl.FLOAT, false, 0, 0);
+  gl.bufferData(gl.ARRAY_BUFFER, d, gl.DYNAMIC_DRAW);
+  gl.vertexAttribPointer(a_Position, 2, gl.FLOAT, false, 24, 0);
   gl.enableVertexAttribArray(a_Position);
+  gl.vertexAttribPointer(a_Color, 4, gl.FLOAT, false, 24, 8);
+  gl.enableVertexAttribArray(a_Color);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }

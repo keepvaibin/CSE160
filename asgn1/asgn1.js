@@ -1,17 +1,20 @@
 const VSHADER_SOURCE = `
   attribute vec4 a_Position;
+  attribute vec4 a_Color;
   uniform float u_Size;
+  varying vec4 v_Color;
   void main() {
     gl_Position = a_Position;
     gl_PointSize = u_Size;
+    v_Color = a_Color;
   }
 `;
 
 const FSHADER_SOURCE = `
   precision mediump float;
-  uniform vec4 u_FragColor;
+  varying vec4 v_Color;
   void main() {
-    gl_FragColor = u_FragColor;
+    gl_FragColor = v_Color;
   }
 `;
 
@@ -22,16 +25,32 @@ const CIRCLE = 2;
 let canvas;
 let gl;
 let a_Position;
+let a_Color;
 let u_FragColor;
 let u_Size;
+const BRUSH_MAX_FLOATS = 8000000;
+const RAIN_MAX = 1000;
+const g_shapeScratch = new Float32Array(5000);
 let g_vertexBuffer = null;
+let g_picBuf    = null;
+let g_picArr    = new Float32Array(50000);
+let g_picFloats = 0;
+let g_picDirty  = false;
+let g_brushBuf      = null;
+let g_brushHead     = 0;
+let g_brushCapacity = 0;
+let g_brushFull     = false;
+let g_rainBuf  = null;
+let g_rainArr  = new Float32Array(RAIN_MAX * 540);
+let g_rainRing = new Array(RAIN_MAX).fill(null);
+let g_rainHead = 0;
+let g_rainSize = 0;
+let g_brushShapeCount = 0;
 
 let g_selectedType = POINT;
 let g_selectedColor = [1.0, 0.25, 0.25, 1.0];
 let g_selectedSize = 14;
 let g_selectedSegments = 12;
-let g_shapesList = [];
-let g_pictureShapes = [];
 let g_isDragging = false;
 let g_lastDragPosition = null;
 let g_rainbowPhase = 0;
@@ -75,13 +94,20 @@ function connectVariablesToGLSL() {
     return false;
   }
   a_Position = gl.getAttribLocation(gl.program, 'a_Position');
-  u_FragColor = gl.getUniformLocation(gl.program, 'u_FragColor');
+  a_Color = gl.getAttribLocation(gl.program, 'a_Color');
   u_Size = gl.getUniformLocation(gl.program, 'u_Size');
   g_vertexBuffer = gl.createBuffer();
-  if (a_Position < 0 || !u_FragColor || !u_Size || !g_vertexBuffer) {
+  g_picBuf   = gl.createBuffer();
+  g_brushBuf = gl.createBuffer();
+  g_rainBuf  = gl.createBuffer();
+  if (a_Position < 0 || a_Color < 0 || !g_vertexBuffer || !g_picBuf || !g_brushBuf || !g_rainBuf) {
     console.log('Failed to connect variables to GLSL');
     return false;
   }
+  gl.bindBuffer(gl.ARRAY_BUFFER, g_brushBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, BRUSH_MAX_FLOATS * 4, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(a_Position);
+  gl.enableVertexAttribArray(a_Color);
   return true;
 }
 
@@ -91,8 +117,10 @@ function addActionsForHtmlUI() {
   document.getElementById('circleButton').onclick = function() { setBrushType(CIRCLE); };
 
   document.getElementById('clearButton').onclick = function() {
-    g_shapesList = [];
-    g_pictureShapes = [];
+    g_brushHead = 0; g_brushCapacity = 0; g_brushFull = false;
+    g_picFloats = 0; g_picDirty = true;
+    g_rainHead = 0; g_rainSize = 0;
+    g_brushShapeCount = 0;
     g_lastDragPosition = null;
     g_rainbowPhase = 0;
     g_hasAnimatedShapes = false;
@@ -100,7 +128,7 @@ function addActionsForHtmlUI() {
   };
 
   document.getElementById('pictureButton').onclick = function() {
-    g_pictureShapes = createPictureScene();
+    createPictureScene();
     renderAllShapes();
   };
 
@@ -189,22 +217,29 @@ function buildStrokePositions(position) {
 }
 
 function addShape(position) {
-  const shape = createShape();
-  shape.position = [position[0], position[1]];
-  shape.size = g_selectedSize;
+  const px = position[0], py = position[1];
+  const rad = sizeToRadius(g_selectedSize);
+  const type = g_selectedType;
+  const segs = g_selectedSegments;
+  g_brushShapeCount++;
   if (isRainbowBrushEnabled()) {
-    shape.isRainbow = true;
-    shape.rainbowPhase = g_rainbowPhase;
-    shape.color = getRainbowColor(g_rainbowPhase);
+    g_rainRing[g_rainHead] = { px, py, rad, type, segs, rainbowPhase: g_rainbowPhase };
+    g_rainHead = (g_rainHead + 1) % RAIN_MAX;
+    if (g_rainSize < RAIN_MAX) g_rainSize++;
     g_rainbowPhase += 0.38;
     g_hasAnimatedShapes = true;
   } else {
-    shape.isRainbow = false;
-    shape.rainbowPhase = 0;
-    shape.color = g_selectedColor.slice();
+    const cr = g_selectedColor[0], cg = g_selectedColor[1], cb = g_selectedColor[2], ca = g_selectedColor[3];
+    const newF = bakeShapeVerts(g_shapeScratch, 0, type, px, py, rad, segs, cr, cg, cb, ca);
+    if (g_brushHead + newF > BRUSH_MAX_FLOATS) {
+      g_brushCapacity = g_brushHead;
+      g_brushHead = 0;
+      g_brushFull = true;
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, g_brushBuf);
+    gl.bufferSubData(gl.ARRAY_BUFFER, g_brushHead * 4, g_shapeScratch.subarray(0, newF));
+    g_brushHead += newF;
   }
-  if (shape instanceof Circle) shape.segments = g_selectedSegments;
-  g_shapesList.push(shape);
 }
 
 function createShape() {
@@ -213,19 +248,84 @@ function createShape() {
   return new Point();
 }
 
+function appendTri(d, o, x1, y1, x2, y2, x3, y3, r, g, b, a) {
+  d[o]   = x1; d[o+1] = y1; d[o+2]  = r; d[o+3]  = g; d[o+4]  = b; d[o+5]  = a;
+  d[o+6] = x2; d[o+7] = y2; d[o+8]  = r; d[o+9]  = g; d[o+10] = b; d[o+11] = a;
+  d[o+12]= x3; d[o+13]= y3; d[o+14] = r; d[o+15] = g; d[o+16] = b; d[o+17] = a;
+  return o + 18;
+}
+
+function bakeShapeVerts(arr, off, type, px, py, rad, segs, cr, cg, cb, ca) {
+  if (type === CIRCLE) {
+    const step = (Math.PI * 2) / segs;
+    for (let i = 0; i < segs; i++) {
+      const a1 = i * step, a2 = (i + 1) * step;
+      off = appendTri(arr, off,
+        px, py,
+        px + Math.cos(a1) * rad, py + Math.sin(a1) * rad,
+        px + Math.cos(a2) * rad, py + Math.sin(a2) * rad,
+        cr, cg, cb, ca);
+    }
+    return off;
+  }
+  if (type === TRIANGLE) {
+    return appendTri(arr, off, px, py + rad, px - rad, py - rad, px + rad, py - rad, cr, cg, cb, ca);
+  }
+  off = appendTri(arr, off, px-rad, py-rad, px+rad, py-rad, px+rad, py+rad, cr, cg, cb, ca);
+  off = appendTri(arr, off, px-rad, py-rad, px+rad, py+rad, px-rad, py+rad, cr, cg, cb, ca);
+  return off;
+}
+
 function renderAllShapes() {
   gl.clear(gl.COLOR_BUFFER_BIT);
-  for (let i = 0; i < g_pictureShapes.length; i++) g_pictureShapes[i].render();
-  for (let i = 0; i < g_shapesList.length; i++) g_shapesList[i].render();
+  function useAttribs(buf) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.vertexAttribPointer(a_Position, 2, gl.FLOAT, false, 24, 0);
+    gl.vertexAttribPointer(a_Color,    4, gl.FLOAT, false, 24, 8);
+  }
+  if (g_picDirty && g_picFloats > 0) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, g_picBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, g_picArr.subarray(0, g_picFloats), gl.STATIC_DRAW);
+    g_picDirty = false;
+  }
+  if (g_picFloats > 0) {
+    useAttribs(g_picBuf);
+    gl.drawArrays(gl.TRIANGLES, 0, g_picFloats / 6);
+  }
+  if (g_brushFull) {
+    useAttribs(g_brushBuf);
+    const oldF = g_brushCapacity - g_brushHead;
+    if (oldF > 0) gl.drawArrays(gl.TRIANGLES, g_brushHead / 6, oldF / 6);
+    if (g_brushHead > 0) gl.drawArrays(gl.TRIANGLES, 0, g_brushHead / 6);
+  } else if (g_brushHead > 0) {
+    useAttribs(g_brushBuf);
+    gl.drawArrays(gl.TRIANGLES, 0, g_brushHead / 6);
+  }
+  if (g_rainSize > 0) {
+    const time = performance.now() * 0.0014;
+    const needed = g_rainSize * 540;
+    if (needed > g_rainArr.length) g_rainArr = new Float32Array(needed * 2);
+    let roff = 0;
+    const oldest = g_rainSize < RAIN_MAX ? 0 : g_rainHead;
+    for (let i = 0; i < g_rainSize; i++) {
+      const s = g_rainRing[(oldest + i) % RAIN_MAX];
+      const rc = getRainbowColor(time + s.rainbowPhase);
+      roff = bakeShapeVerts(g_rainArr, roff, s.type, s.px, s.py, s.rad, s.segs, rc[0], rc[1], rc[2], rc[3]);
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, g_rainBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, g_rainArr.subarray(0, roff), gl.DYNAMIC_DRAW);
+    useAttribs(g_rainBuf);
+    gl.drawArrays(gl.TRIANGLES, 0, roff / 6);
+  }
   document.getElementById('statusText').textContent =
-    'Brush shapes: ' + g_shapesList.length + ' | Picture triangles: ' + g_pictureShapes.length;
+    'Brush shapes: ' + g_brushShapeCount + ' | Picture triangles: ' + Math.round(g_picFloats / 18);
 }
 
 function tick() {
   const now = performance.now();
   if (g_gameActive) {
     tickGame(now);
-  } else if (g_hasAnimatedShapes) {
+  } else if (g_rainSize > 0) {
     renderAllShapes();
   }
   requestAnimationFrame(tick);
@@ -362,12 +462,11 @@ function spawnGem() {
 }
 
 function renderGame() {
-  gl.uniform1f(u_Size, 1);
-  gl.uniform4f(u_FragColor, 0.06, 0.03, 0.16, 1);
-  drawTriangle([-1, -1, 1, -1, 1, 1]);
-  drawTriangle([-1, -1, 1, 1, -1, 1]);
-  gl.uniform4f(u_FragColor, 0.12, 0.08, 0.28, 1);
-  drawTriangle([-1, -0.85, 1, -0.85, 0, -0.55]);
+  const bg  = [0.06, 0.03, 0.16, 1];
+  const bg2 = [0.12, 0.08, 0.28, 1];
+  drawTriangle([-1, -1, 1, -1, 1, 1], bg);
+  drawTriangle([-1, -1, 1, 1, -1, 1], bg);
+  drawTriangle([-1, -0.85, 1, -0.85, 0, -0.55], bg2);
   for (let i = 0; i < g_gameGems.length; i++) {
     const g = g_gameGems[i];
     drawGameGem(g.x, g.y, g.size, g.color);
@@ -377,14 +476,10 @@ function renderGame() {
 function drawGameGem(x, y, s, c) {
   const light = [Math.min(1, c[0] * 1.4), Math.min(1, c[1] * 1.4), Math.min(1, c[2] * 1.4), 1];
   const dark  = [c[0] * 0.55, c[1] * 0.55, c[2] * 0.55, 1];
-  gl.uniform1f(u_Size, 1);
-  gl.uniform4f(u_FragColor, light[0], light[1], light[2], 1);
-  drawTriangle([x, y + s, x + s * 0.72, y, x - s * 0.72, y]);
-  gl.uniform4f(u_FragColor, c[0], c[1], c[2], 1);
-  drawTriangle([x, y + s, x + s * 0.72, y, x, y - s]);
-  drawTriangle([x, y + s, x - s * 0.72, y, x, y - s]);
-  gl.uniform4f(u_FragColor, dark[0], dark[1], dark[2], 1);
-  drawTriangle([x + s * 0.72, y, x - s * 0.72, y, x, y - s]);
+  drawTriangle([x, y + s, x + s * 0.72, y, x - s * 0.72, y], light);
+  drawTriangle([x, y + s, x + s * 0.72, y, x, y - s], c);
+  drawTriangle([x, y + s, x - s * 0.72, y, x, y - s], c);
+  drawTriangle([x + s * 0.72, y, x - s * 0.72, y, x, y - s], dark);
 }
 
 function handleGameClick(ev) {
@@ -400,9 +495,19 @@ function handleGameClick(ev) {
 }
 
 function createPictureScene() {
-  const triangles = [];
-  pushCrownMesh(triangles);
-  return triangles;
+  g_picFloats = 0;
+  const tris = [];
+  pushCrownMesh(tris);
+  for (let i = 0; i < tris.length; i++) {
+    const t = tris[i], v = t.vertices, c = t.color;
+    if (g_picFloats + 18 > g_picArr.length) {
+      const na = new Float32Array(g_picArr.length * 2);
+      na.set(g_picArr.subarray(0, g_picFloats));
+      g_picArr = na;
+    }
+    g_picFloats = appendTri(g_picArr, g_picFloats, v[0],v[1], v[2],v[3], v[4],v[5], c[0],c[1],c[2],c[3]);
+  }
+  g_picDirty = true;
 }
 
 function pt(tris, x1, y1, x2, y2, x3, y3, c) {
