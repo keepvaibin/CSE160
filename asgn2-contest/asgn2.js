@@ -335,8 +335,8 @@ function renderScene() {
     var bodyBobPulse = getDiagonalBobPulse(gWalkPhase, BOB_DIAGONAL_PHASE_OFFSET);
     fullAnimBob = FULL_ANIM_BODY_BOB_AMPLITUDE * bodyBobPulse;
   }
-  root.translate(0.0, -0.195 + fullAnimBob, 0.0);
-  root.scale(0.80, 0.80, 0.80);
+  root.translate(0.0, -0.324 + fullAnimBob, 0.0);
+  root.scale(0.64, 0.64, 0.64);
 
   var eatPose = getEatingPose();
   handleGrassBite(eatPose.bite);

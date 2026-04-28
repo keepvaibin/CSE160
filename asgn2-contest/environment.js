@@ -16,6 +16,8 @@ var FLOWER_COLORS = [
 
 var STEM_COLOR = [0.18, 0.44, 0.15, 1.0];
 var FLOWER_CENTER_COLOR = [0.23, 0.16, 0.08, 1.0];
+var GRASS_HEIGHT_SCALE = 0.86;
+var GRASS_WIDTH_SCALE = 0.90;
 
 function seededRandom(seed) {
   var value = Math.sin(seed * 12.9898) * 43758.5453;
@@ -90,6 +92,8 @@ function buildMeadowMeshes() {
     var height = 0.10 + seededRandom(g + 122.0) * 0.18;
     height *= 1.0 - cowClearance * 0.48;
     var width = 0.009 + seededRandom(g + 311.0) * 0.012;
+    height *= GRASS_HEIGHT_SCALE;
+    width *= GRASS_WIDTH_SCALE;
     var yaw = seededRandom(g + 409.0) * Math.PI * 2.0;
     var lean = (seededRandom(g + 511.0) - 0.5) * 0.10;
     addGrassBlade(grassGroups[g % grassGroups.length], x, z, height, width, yaw, lean);
@@ -145,8 +149,8 @@ function ensureInteractiveGrass() {
     gInteractiveGrass.push({
       x: 0.93 + (seededRandom(i + 2001.0) - 0.5) * 0.24,
       z: (seededRandom(i + 2101.0) - 0.5) * 0.26,
-      height: 0.17 + seededRandom(i + 2201.0) * 0.14,
-      width: 0.018 + seededRandom(i + 2301.0) * 0.014,
+      height: (0.17 + seededRandom(i + 2201.0) * 0.14) * GRASS_HEIGHT_SCALE,
+      width: (0.018 + seededRandom(i + 2301.0) * 0.014) * GRASS_WIDTH_SCALE,
       yaw: seededRandom(i + 2401.0) * Math.PI * 2.0,
       lean: (seededRandom(i + 2501.0) - 0.5) * 24.0,
       color: GRASS_COLORS[i % GRASS_COLORS.length]
@@ -155,6 +159,7 @@ function ensureInteractiveGrass() {
 }
 
 function drawEatingGrassPatch(eatPose) {
+  if (!gEatingAnimationActive) return;
   ensureInteractiveGrass();
   var bladeMesh = getGrassBladeMesh();
   var bite = eatPose ? eatPose.bite : 0.0;
@@ -166,7 +171,9 @@ function drawEatingGrassPatch(eatPose) {
     var blade = gInteractiveGrass[i];
     var matrix = new Matrix4();
     var heightScale = blade.height * (1.0 - bite * 0.72);
-    matrix.translate(wrapGrassX(blade.x + gGrassScrollOffset), GROUND_Y + 0.015, blade.z);
+    // Keep the biteable patch anchored in front of the cow so the visible grass
+    // matches the mouth target used by the eating animation and bite selection.
+    matrix.translate(blade.x, GROUND_Y + 0.015, blade.z);
     matrix.rotate(blade.yaw * 180.0 / Math.PI, 0, 1, 0);
     matrix.rotate(blade.lean + bend, 0, 0, 1);
     matrix.scale(blade.width, heightScale, blade.width);
