@@ -635,14 +635,14 @@ function drawCow(rootMatrix, isShadow, eatPose) {
   // Jaw — animated lower lip kept tighter under the muzzle.
   var jawJoint = createJointMatrix(headJoint, 0.278, -0.070, 0.0, 0, 0, -eatPose.jawAngle);
   drawMeshPart(jawJoint, 0.045, 0.0, 0.0, 0, 0, -90, 0.084, 0.114, 0.114, cylinderMesh, noseColor, false);
-  // Eyes — smaller and without the dark side discs.
-  drawMeshPart(headJoint, 0.162, 0.060, 0.139, 0, 0, 0, 0.022, 0.020, 0.005, lowEllipsoidMesh, eyeWhiteColor, false);
-  drawMeshPart(headJoint, 0.162, 0.060, -0.139, 0, 0, 0, 0.022, 0.020, 0.005, lowEllipsoidMesh, eyeWhiteColor, false);
-  drawMeshPart(headJoint, 0.170, 0.059, 0.142, 0, 0, 0, 0.009, 0.013, 0.003, lowEllipsoidMesh, pupilColor, false);
-  drawMeshPart(headJoint, 0.170, 0.059, -0.142, 0, 0, 0, 0.009, 0.013, 0.003, lowEllipsoidMesh, pupilColor, false);
-  // Ears — broad, horizontal, slightly forward-drooped
-  drawMeshPart(headJoint, -0.035, 0.125, 0.210, 8, -18, -5, 0.085, 0.045, 0.162, ellipsoidMesh, earColor, false);
-  drawMeshPart(headJoint, -0.035, 0.125, -0.210, -8, 18, -5, 0.085, 0.045, 0.162, ellipsoidMesh, earColor, false);
+  // Eyes — larger and tucked closer into the side of the skull.
+  drawMeshPart(headJoint, 0.154, 0.062, 0.124, 0, 0, 0, 0.032, 0.027, 0.007, lowEllipsoidMesh, eyeWhiteColor, false);
+  drawMeshPart(headJoint, 0.154, 0.062, -0.124, 0, 0, 0, 0.032, 0.027, 0.007, lowEllipsoidMesh, eyeWhiteColor, false);
+  drawMeshPart(headJoint, 0.166, 0.061, 0.127, 0, 0, 0, 0.012, 0.016, 0.004, lowEllipsoidMesh, pupilColor, false);
+  drawMeshPart(headJoint, 0.166, 0.061, -0.127, 0, 0, 0, 0.012, 0.016, 0.004, lowEllipsoidMesh, pupilColor, false);
+  // Ears — larger and sunk inward so they attach to the poll instead of floating off the head.
+  drawMeshPart(headJoint, -0.055, 0.118, 0.176, 10, -14, -8, 0.098, 0.052, 0.148, ellipsoidMesh, earColor, false);
+  drawMeshPart(headJoint, -0.055, 0.118, -0.176, -10, 14, -8, 0.098, 0.052, 0.148, ellipsoidMesh, earColor, false);
   // Horns at poll
   drawMeshPart(headJoint, -0.055, 0.188, 0.096, 0, 25, -30, 0.034, 0.110, 0.034, coneMesh, hornColor, false);
   drawMeshPart(headJoint, -0.055, 0.188, -0.096, 0, -25, -30, 0.034, 0.110, 0.034, coneMesh, hornColor, false);
