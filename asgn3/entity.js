@@ -14,7 +14,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const ENTITY_SPEED       = 2.4;     // base units/sec (player walk = 5.0)
-const ENTITY_BURST_MULT  = 1.10;    // speed bump when player is in line of sight (was 1.45)
+const ENTITY_BURST_MULT  = 1.20;    // speed bump when player is in line of sight
 const ENTITY_BURST_RANGE = 9.0;     // sightline distance for burst trigger
 const ENTITY_RADIUS  = 0.28;
 // Spawn anchors are filled in by initMap(); fall back to far-corner defaults.
@@ -128,23 +128,34 @@ function _recomputePath() {
   const sx  = Math.floor(eye[0]);
   const sz  = Math.floor(eye[2]);
   if (sx < 0 || sx >= MAP_SIZE || sz < 0 || sz >= MAP_SIZE) return;
-  if (g_Map[sx][sz] > 0) return;  // player somehow in a wall — bail
+  if (g_Map[sx][sz] > 0) return;
 
   const dir = new Array(MAP_SIZE);
   for (let i = 0; i < MAP_SIZE; i++) dir[i] = new Array(MAP_SIZE).fill(null);
-  dir[sx][sz] = [0, 0];   // sentinel: we are the goal
+  dir[sx][sz] = [0, 0];
 
   const queue = [[sx, sz]];
   let head = 0;
-  const NEIGH = [[1,0],[-1,0],[0,1],[0,-1]];
+  // 8-directional neighbours; diagonals only allowed when both cardinal
+  // neighbours sharing the corner are open (prevents clipping through walls).
+  const CARD = [[1,0],[-1,0],[0,1],[0,-1]];
+  const DIAG = [[1,1],[1,-1],[-1,1],[-1,-1]];
   while (head < queue.length) {
     const [cx, cz] = queue[head++];
-    for (const [ox, oz] of NEIGH) {
+    // cardinal neighbours
+    for (const [ox, oz] of CARD) {
       const nx = cx + ox, nz = cz + oz;
       if (nx < 0 || nx >= MAP_SIZE || nz < 0 || nz >= MAP_SIZE) continue;
-      if (dir[nx][nz] !== null) continue;
-      if (g_Map[nx][nz] > 0)    continue;
-      // From (nx,nz) the next step toward the player goes back to (cx,cz)
+      if (dir[nx][nz] !== null || g_Map[nx][nz] > 0) continue;
+      dir[nx][nz] = [cx - nx, cz - nz];
+      queue.push([nx, nz]);
+    }
+    // diagonal neighbours — only passable if both adjacent cards are open
+    for (const [ox, oz] of DIAG) {
+      const nx = cx + ox, nz = cz + oz;
+      if (nx < 0 || nx >= MAP_SIZE || nz < 0 || nz >= MAP_SIZE) continue;
+      if (dir[nx][nz] !== null || g_Map[nx][nz] > 0) continue;
+      if (g_Map[cx + ox][cz] > 0 || g_Map[cx][cz + oz] > 0) continue;
       dir[nx][nz] = [cx - nx, cz - nz];
       queue.push([nx, nz]);
     }
@@ -156,25 +167,33 @@ function _recomputePath() {
 // updateEntity — BFS-driven smooth chase
 // ─────────────────────────────────────────────────────────────────────────────
 function updateEntity(dt) {
-  // Recompute the flow field 4×/sec for snappy reactions in the bigger maze
+  // Recompute the flow field 8x/sec for fast reactions
   g_entity.pathRecalcTimer -= dt;
   if (g_entity.pathRecalcTimer <= 0 || !g_entity.pathDir) {
     _recomputePath();
-    g_entity.pathRecalcTimer = 0.25;
+    g_entity.pathRecalcTimer = 0.125;
   }
 
-  let tgtX, tgtZ;
   const eye = camera.eye.elements;
-  const ix = Math.floor(g_entity.x), iz = Math.floor(g_entity.z);
-  const inBounds = (ix >= 0 && ix < MAP_SIZE && iz >= 0 && iz < MAP_SIZE);
-  const step = inBounds && g_entity.pathDir ? g_entity.pathDir[ix][iz] : null;
+  const los = _hasLineOfSightToPlayer();
+  g_entity.hasLOS = los;
 
-  if (step && (step[0] !== 0 || step[1] !== 0)) {
-    tgtX = ix + step[0] + 0.5;
-    tgtZ = iz + step[1] + 0.5;
-  } else {
+  let tgtX, tgtZ;
+  if (los) {
+    // Steer directly at player when we can see them — no grid snapping.
     tgtX = eye[0];
     tgtZ = eye[2];
+  } else {
+    const ix = Math.floor(g_entity.x), iz = Math.floor(g_entity.z);
+    const inBounds = (ix >= 0 && ix < MAP_SIZE && iz >= 0 && iz < MAP_SIZE);
+    const step = inBounds && g_entity.pathDir ? g_entity.pathDir[ix][iz] : null;
+    if (step && (step[0] !== 0 || step[1] !== 0)) {
+      tgtX = ix + step[0] + 0.5;
+      tgtZ = iz + step[1] + 0.5;
+    } else {
+      tgtX = eye[0];
+      tgtZ = eye[2];
+    }
   }
 
   const dx   = tgtX - g_entity.x;
@@ -198,8 +217,6 @@ function updateEntity(dt) {
   // burst when the player is close AND in line of sight (no walls between)
   let speed = ENTITY_SPEED;
   const distToPlayer = getEntityDist();
-  const los = _hasLineOfSightToPlayer();
-  g_entity.hasLOS = los;
   g_entity.inChase = (distToPlayer < ENTITY_BURST_RANGE && los);
   if (g_entity.inChase) {
     speed *= ENTITY_BURST_MULT;

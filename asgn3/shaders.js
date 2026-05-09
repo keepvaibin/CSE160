@@ -123,7 +123,6 @@ vec4 sampleWallBlurred(vec2 uv) {
 }
 
 void main() {
-  // sample the right texture for this draw call
   vec4 texColor;
   if      (u_whichTexture == 0) texColor = sampleWallBlurred(v_TexCoord);
   else if (u_whichTexture == 1) texColor = texture2D(u_Sampler1, v_TexCoord);
@@ -131,57 +130,47 @@ void main() {
   else if (u_whichTexture == 4) texColor = texture2D(u_Sampler4, v_TexCoord);
   else                          texColor = texture2D(u_Sampler3, v_TexCoord);
 
-  if (u_whichTexture == 4) {
-    // ── goop decal path ───────────────────────────────────────────────────
-    // completely isolated from lighting / fog so nothing can overwrite it.
-    // the PNG has a real alpha channel: bg=transparent, ink=opaque.
-    // discard the transparent background; tint the ink with u_baseColor.
-    if (texColor.a < 0.05) discard;
-    float fog = clamp((v_Dist - u_fogNear) / (u_fogFar - u_fogNear) * 0.35, 0.0, 1.0);
-    gl_FragColor = vec4(mix(u_baseColor.rgb, u_fogColor, fog), texColor.a);
+  // goop tiles: transparent background shows underlying floor/wall through blending
+  if (u_whichTexture == 4 && texColor.a < 0.05) discard;
 
+  vec3 albedo;
+  if (u_whichTexture == 0 && u_texColorWeight > 0.5) {
+    albedo = texColor.rgb;
   } else {
-    // ── standard wall / floor / ceiling / door path ───────────────────────
-    vec3 albedo;
-    if (u_whichTexture == 0 && u_texColorWeight > 0.5) {
-      albedo = texColor.rgb;
-    } else {
-      albedo = mix(u_baseColor, texColor, clamp(u_texColorWeight, 0.0, 1.0)).rgb;
-    }
-
-    vec3  nrm   = normalize(v_Normal);
-    float light = 0.20;
-    for (int i = 0; i < MAX_LIGHTS; i++) {
-      if (i >= u_numLights) break;
-      float fid   = float(i);
-      float baseI = 0.78 + 0.04 * sin(fid * 1.9);
-      float speed = 5.0  + 2.4  * fid;
-      float phase = fid  * 1.37;
-      light += fluorescent(baseI, speed, phase, fid) * pointLight(u_lightPos[i], nrm) * 0.62;
-    }
-    light = clamp(light, 0.0, 1.4);
-    vec3 lit = albedo * light;
-
-    // ceiling light tiles: each tile gets a unique flicker phase
-    if (u_whichTexture == 2) {
-      float tileId  = floor(v_WorldPos.x) * 7.13 + floor(v_WorldPos.z) * 3.71;
-      float emissive = 1.05;
-      if (u_flickerEnabled == 1)
-        emissive *= fluorescent(1.0, 8.5 + mod(tileId, 3.0),
-                                v_WorldPos.x * 0.7 + v_WorldPos.z * 0.4, tileId);
-      lit = mix(lit, texColor.rgb * emissive, 0.85);
-    }
-
-    // emissive override (tv screen)
-    if (u_emissive == 1) {
-      float ee = 1.0;
-      if (u_flickerEnabled == 1)
-        ee = 0.55 + 0.55 * fluorescent(1.0, 11.0, v_WorldPos.x * 1.3, 21.0);
-      lit = albedo * ee;
-    }
-
-    float fogFactor = clamp((v_Dist - u_fogNear) / (u_fogFar - u_fogNear), 0.0, 1.0);
-    gl_FragColor = vec4(mix(lit, u_fogColor, fogFactor), 1.0);
+    albedo = mix(u_baseColor, texColor, clamp(u_texColorWeight, 0.0, 1.0)).rgb;
   }
+
+  vec3  nrm   = normalize(v_Normal);
+  float light = 0.20;
+  for (int i = 0; i < MAX_LIGHTS; i++) {
+    if (i >= u_numLights) break;
+    float fid   = float(i);
+    float baseI = 0.78 + 0.04 * sin(fid * 1.9);
+    float speed = 5.0  + 2.4  * fid;
+    float phase = fid  * 1.37;
+    light += fluorescent(baseI, speed, phase, fid) * pointLight(u_lightPos[i], nrm) * 0.62;
+  }
+  light = clamp(light, 0.0, 1.4);
+  vec3 lit = albedo * light;
+
+  if (u_whichTexture == 2) {
+    float tileId  = floor(v_WorldPos.x) * 7.13 + floor(v_WorldPos.z) * 3.71;
+    float emissive = 1.05;
+    if (u_flickerEnabled == 1)
+      emissive *= fluorescent(1.0, 8.5 + mod(tileId, 3.0),
+                              v_WorldPos.x * 0.7 + v_WorldPos.z * 0.4, tileId);
+    lit = mix(lit, texColor.rgb * emissive, 0.85);
+  }
+
+  if (u_emissive == 1) {
+    float ee = 1.0;
+    if (u_flickerEnabled == 1)
+      ee = 0.55 + 0.55 * fluorescent(1.0, 11.0, v_WorldPos.x * 1.3, 21.0);
+    lit = albedo * ee;
+  }
+
+  float fogFactor = clamp((v_Dist - u_fogNear) / (u_fogFar - u_fogNear), 0.0, 1.0);
+  float outAlpha  = (u_whichTexture == 4) ? texColor.a : 1.0;
+  gl_FragColor = vec4(mix(lit, u_fogColor, fogFactor), outAlpha);
 }
 `;

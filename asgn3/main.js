@@ -123,10 +123,11 @@ const ENABLE_chair3 = true;
 const ENABLE_chair4 = true;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// goop arrow settings
+// goop tile settings
 // ─────────────────────────────────────────────────────────────────────────────
-const ARROW_COUNT        = 50;   // total goop arrows placed in the map
-const ARROW_WRONG_CHANCE = 0.15; // fraction pointing in wrong direction
+const GOOP_FLOOR_CHANCE = 0.008; // ~0.8% of open floor cells get a goop decal
+const GOOP_WALL_CHANCE  = 0.006; // ~0.6% of eligible wall faces get a goop marking
+const GOOP_WRONG_CHANCE = 0.08;  // 8% of wall arrows point the wrong way
 
 // ─────────────────────────────────────────────────────────────────────────────
 // main — entry point
@@ -196,7 +197,7 @@ function main() {
   loadTexture(gl.TEXTURE1, 'textures/ceiling_floor.png', 'ceiling_floor');
   loadTexture(gl.TEXTURE2, 'textures/light.png',         'light');
   loadTexture(gl.TEXTURE3, 'textures/Oak_Door_(bottom_texture)_JE4_BE2.png', 'door');
-  loadTexture(gl.TEXTURE4, 'textures/goop_arrow.png',    'goop');
+  loadGoopTextures();
 
   // ── World ─────────────────────────────────────────────────────────────────
   camera = new Camera(canvas);
@@ -205,9 +206,9 @@ function main() {
   buildWorldGeometry();
   initSingleCubeBuffer();
 
-  // goop arrow decals — generate after map is ready
-  initArrowQuadBuffer();
-  generateArrowSlots();
+  // goop tile decals — assign cells/faces after map is ready, then build VBOs
+  assignGoopTiles();
+  buildGoopGeometry();
 
   // push the world's chosen light positions into the glsl array uniform.
   uploadLightPositions();
@@ -278,7 +279,7 @@ function renderScene() {
   gl.uniformMatrix4fv(u_ViewMatrix,       false, camera.viewMatrix.elements);
   gl.uniformMatrix4fv(u_ProjectionMatrix, false, camera.projectionMatrix.elements);
   renderWorld();
-  drawGoopArrows();
+  drawGoopWorld();
   drawFurniture();
   drawEntity(g_seconds);
 }
@@ -380,10 +381,26 @@ const FURNITURE_DEFS = {
 //   { buffer, vertCount, scale, offsetX, offsetY, offsetZ }
 var g_furnitureMeshes = {};
 
-// goop decal arrows
-var g_ArrowSlots  = [];   // [{pos,arrowRight,normal}, ...]
-var g_arrowQuadBuf = null; // shared WebGL buffer for the quad
+// goop tile decals
+var g_goopFloorCells = new Map(); // "x,z" -> texName
+var g_goopWallFaces  = new Map(); // "wx,wz,face,y" -> texName
+var g_goopBatches    = [];        // [{texName, buffer, vertCount}]
 var u_Sampler4 = null;    // uniform location for goop texture
+var g_GoopTexObjs = {};   // filename -> WebGL texture object
+
+// floor-only goop textures (all goop_ that are NOT goop_wall_)
+const GOOP_FLOOR_TEXTURES = [
+  'goop_arrow.png', 'goop_arrow_down.png', 'goop_arrow_left.png',
+  'goop_arrow_left_down.png', 'goop_arrow_left_up.png',
+  'goop_arrow_right.png', 'goop_arrow_right_down.png', 'goop_arrow_right_up.png',
+  'goop_arrow_up.png',
+  'goop_cross_1.png', 'goop_cross_2.png', 'goop_cross_3.png',
+  'goop_splatter.png', 'goop_splatter_1.png', 'goop_splatter_2.png',
+  'goop_splatter_3.png', 'goop_splatter_4.png', 'goop_splatter_5.png',
+  'goop_splatter_6.png', 'goop_stroke.png', 'goop_x.png',
+];
+const GOOP_WALL_LEFT_TEXTURES  = ['goop_wall_left_1.png',  'goop_wall_left_2.png',  'goop_wall_left_3.png'];
+const GOOP_WALL_RIGHT_TEXTURES = ['goop_wall_right_1.png', 'goop_wall_right_2.png', 'goop_wall_right_3.png'];
 
 function loadFurnitureMeshes() {
   for (const kind of Object.keys(FURNITURE_DEFS)) {
@@ -466,164 +483,127 @@ function drawFurniture() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// goop arrow decals — alpha-blended quads smeared on floors and walls,
-// pointing roughly toward the exit door.  ~15% are deliberately wrong.
+// goop tile decals — goop textures placed on floor and wall tiles,
+// rendered with the same lighting/fog as normal geometry.
+// Transparent PNG areas let the underlying floor/wall show through.
 // ─────────────────────────────────────────────────────────────────────────────
 
-function _v3norm(v) {
-  const l = Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]) || 1;
-  return [v[0]/l, v[1]/l, v[2]/l];
-}
-function _v3cross(a, b) {
-  return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
-}
+// Maps open-cell neighbour direction → the face enum on the WALL CELL
+// that is visible from the open cell (matches buildWorldGeometry face push logic).
+const GOOP_WALL_NEIGHBORS = [
+  { dcx:  0, dcz: -1, wallFace: FACE_FRONT },  // wall to -Z, its +Z face shows
+  { dcx:  0, dcz: +1, wallFace: FACE_BACK  },  // wall to +Z, its -Z face shows
+  { dcx: -1, dcz:  0, wallFace: FACE_RIGHT },  // wall to -X, its +X face shows
+  { dcx: +1, dcz:  0, wallFace: FACE_LEFT  },  // wall to +X, its -X face shows
+];
 
-function initArrowQuadBuffer() {
-  // canonical quad: lies in XZ plane, arrow points local +X.
-  // 6 vertices (2 triangles), 8 floats each: x,y,z, u,v, nx,ny,nz
-  const W = 0.70, H = 0.50; // half-width, half-depth (bigger so arrows read clearly)
-  const verts = new Float32Array([
-    -W, 0, -H,  0,0,  0,1,0,
-     W, 0, -H,  1,0,  0,1,0,
-     W, 0,  H,  1,1,  0,1,0,
-    -W, 0, -H,  0,0,  0,1,0,
-     W, 0,  H,  1,1,  0,1,0,
-    -W, 0,  H,  0,1,  0,1,0,
-  ]);
-  g_arrowQuadBuf = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, g_arrowQuadBuf);
-  gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
-}
+function assignGoopTiles() {
+  g_goopFloorCells.clear();
+  g_goopWallFaces.clear();
+  if (!g_Map) return;
 
-function generateArrowSlots() {
-  g_ArrowSlots = [];
-  if (typeof DOOR_CELL_X === 'undefined' || !g_Map) return;
-
-  // deterministic LCG independent from world.js
-  let seed = 0xCAFEBABE;
-  function ar() { seed = (seed * 1664525 + 1013904223) >>> 0; return (seed >>> 8) / 16777215; }
+  let seed = 0xF00DCAFE;
+  function rng() { seed = (seed * 1664525 + 1013904223) >>> 0; return (seed >>> 8) / 16777215; }
 
   const doorX = DOOR_CELL_X + 0.5;
   const doorZ = DOOR_CELL_Z + 0.5;
 
-  // wall-face descriptors: delta to neighbor + face normal pointing INTO room
-  const FACES = [
-    { dcx:  0, dcz: -1, nx: 0, nz:  1 },  // north wall -> face +Z
-    { dcx:  0, dcz:  1, nx: 0, nz: -1 },  // south wall -> face -Z
-    { dcx: -1, dcz:  0, nx: 1, nz:  0 },  // west  wall -> face +X
-    { dcx:  1, dcz:  0, nx:-1, nz:  0 },  // east  wall -> face -X
-  ];
+  for (let x = 0; x < MAP_SIZE; x++) {
+    for (let z = 0; z < MAP_SIZE; z++) {
+      if (g_Map[x][z] !== 0) continue;
 
-  let placed = 0, tries = 0;
-  while (placed < ARROW_COUNT && tries < 9000) {
-    tries++;
-    const cx = 2 + Math.floor(ar() * (MAP_SIZE - 4));
-    const cz = 2 + Math.floor(ar() * (MAP_SIZE - 4));
-    if (g_Map[cx][cz] !== 0) continue;  // must be open floor
+      // floor goop
+      if (rng() < GOOP_FLOOR_CHANCE) {
+        const idx = Math.floor(rng() * GOOP_FLOOR_TEXTURES.length);
+        g_goopFloorCells.set(x + ',' + z, GOOP_FLOOR_TEXTURES[idx]);
+      }
 
-    const wrong = ar() < ARROW_WRONG_CHANCE;
-
-    if (ar() < 0.62) {
-      // ── floor arrow ───────────────────────────────────────────────────
-      let angle = Math.atan2(doorZ - (cz + 0.5), doorX - (cx + 0.5));
-      if (wrong) angle += (0.6 + ar() * 0.8) * Math.PI * (ar() < 0.5 ? 1 : -1);
-      const right  = [Math.cos(angle), 0, Math.sin(angle)];
-      const normal = [0, 1, 0];
-      g_ArrowSlots.push({ pos: [cx + 0.5, 0.02, cz + 0.5], arrowRight: right, normal });
-      placed++;
-    } else {
-      // ── wall arrow ────────────────────────────────────────────────────
-      // shuffle face order, pick first valid wall face
-      const ord = FACES.slice().sort(() => ar() - 0.5);
-      for (const f of ord) {
-        const wx = cx + f.dcx, wz = cz + f.dcz;
+      // wall face goop
+      for (const nb of GOOP_WALL_NEIGHBORS) {
+        const wx = x + nb.dcx, wz = z + nb.dcz;
         if (wx < 0 || wz < 0 || wx >= MAP_SIZE || wz >= MAP_SIZE) continue;
-        if (g_Map[wx][wz] === 0) continue; // not a wall
+        if (g_Map[wx][wz] === 0) continue;
+        if (rng() > GOOP_WALL_CHANCE) continue;
 
-        // position at wall face center, slightly proud of surface
-        const ax = cx + 0.5 + f.nx * (0.5 + 0.03);
-        const az = cz + 0.5 + f.nz * (0.5 + 0.03);
-        const ay = 1.10 + ar() * 0.35;
-
-        // horizontal direction toward door projected onto wall plane
-        // Z-facing walls extend in X; X-facing walls extend in Z.
-        let rawH;
-        if (Math.abs(f.nz) > 0.5) {
-          // wall tangent = ±X
-          rawH = [doorX - ax >= 0 ? 1 : -1, 0, 0];
-        } else {
-          // wall tangent = ±Z
-          rawH = [0, 0, doorZ - az >= 0 ? 1 : -1];
-        }
-        if (wrong) { rawH[0] = -rawH[0]; rawH[2] = -rawH[2]; }
-
-        // slight upward tilt for the classic 'exit sign' look
-        const tilt = 0.08 + ar() * 0.14;
-        const arrowRight = _v3norm([rawH[0], tilt, rawH[2]]);
-
-        g_ArrowSlots.push({
-          pos: [ax, ay, az],
-          arrowRight,
-          normal: [f.nx, 0, f.nz],
-        });
-        placed++;
-        break;
+        const tangX = (nb.dcz !== 0) ? 1 : 0;
+        const tangZ = (nb.dcx !== 0) ? 1 : 0;
+        const dot   = (doorX - (x + 0.5)) * tangX + (doorZ - (z + 0.5)) * tangZ;
+        const wrong = rng() < GOOP_WRONG_CHANCE;
+        const pool  = (dot >= 0) !== wrong ? GOOP_WALL_RIGHT_TEXTURES : GOOP_WALL_LEFT_TEXTURES;
+        const tex   = pool[Math.floor(rng() * pool.length)];
+        g_goopWallFaces.set(wx + ',' + wz + ',' + nb.wallFace + ',1', tex);
       }
     }
   }
 }
 
-function drawGoopArrows() {
-  if (!g_arrowQuadBuf || g_ArrowSlots.length === 0) return;
+function buildGoopGeometry() {
+  for (const b of g_goopBatches) gl.deleteBuffer(b.buffer);
+  g_goopBatches = [];
 
-  const stride = 32;
-  gl.bindBuffer(gl.ARRAY_BUFFER, g_arrowQuadBuf);
-  gl.vertexAttribPointer(a_Position, 3, gl.FLOAT, false, stride,  0);
-  gl.enableVertexAttribArray(a_Position);
-  gl.vertexAttribPointer(a_TexCoord, 2, gl.FLOAT, false, stride, 12);
-  gl.enableVertexAttribArray(a_TexCoord);
-  gl.vertexAttribPointer(a_Normal,   3, gl.FLOAT, false, stride, 20);
-  gl.enableVertexAttribArray(a_Normal);
+  const texVerts = {};
+  function ensureArr(name) { if (!texVerts[name]) texVerts[name] = []; return texVerts[name]; }
 
-  gl.uniform1i(u_whichTexture, 4);
-  gl.uniform1f(u_texColorWeight, 1.0);
-  // bright lime-green goop so it pops against the dingy carpet/walls
-  gl.uniform4f(u_baseColor, 0.55, 1.0, 0.30, 1.0);
-
-  // alpha blend for transparent arrow background
-  gl.enable(gl.BLEND);
-  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-  gl.depthMask(false); // don't write depth; decals stack cleanly
-
-  for (const slot of g_ArrowSlots) {
-    const right  = slot.arrowRight;
-    const norm   = slot.normal;
-    const fwd    = _v3cross(right, norm); // local +Z in world space
-
-    // build model matrix directly from basis vectors (column-major)
-    const m = new Matrix4();
-    const e = m.elements;
-    e[0]=right[0]; e[1]=right[1]; e[2]=right[2]; e[3]=0;
-    e[4]=norm[0];  e[5]=norm[1];  e[6]=norm[2];  e[7]=0;
-    e[8]=fwd[0];   e[9]=fwd[1];   e[10]=fwd[2];  e[11]=0;
-    e[12]=slot.pos[0]; e[13]=slot.pos[1]; e[14]=slot.pos[2]; e[15]=1;
-
-    gl.uniformMatrix4fv(u_ModelMatrix, false, e);
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  for (const [key, texName] of g_goopFloorCells) {
+    const [x, z] = key.split(',').map(Number);
+    pushFace(ensureArr(texName), x, -1, z, FACE_TOP);
   }
 
-  // restore state
+  for (const [key, texName] of g_goopWallFaces) {
+    const [wx, wz, face, y] = key.split(',').map(Number);
+    pushFace(ensureArr(texName), wx, y, wz, face);
+  }
+
+  for (const [texName, verts] of Object.entries(texVerts)) {
+    const data = new Float32Array(verts);
+    const buf  = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    g_goopBatches.push({ texName, buffer: buf, vertCount: data.length / 8 });
+  }
+}
+
+function drawGoopWorld() {
+  if (g_goopBatches.length === 0) return;
+
+  const STRIDE   = 32;
+  const identity = new Matrix4();
+  gl.uniformMatrix4fv(u_ModelMatrix, false, identity.elements);
+  gl.uniform1i(u_whichTexture, 4);
+  gl.uniform1f(u_texColorWeight, 1.0);
+  gl.uniform4f(u_baseColor, 1.0, 1.0, 1.0, 1.0);
+
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.depthMask(false);
+  // push goop fragments slightly toward the camera so they win the depth
+  // test against co-planar floor/wall geometry (prevents z-fighting)
+  gl.enable(gl.POLYGON_OFFSET_FILL);
+  gl.polygonOffset(-1.0, -1.0);
+
+  for (const batch of g_goopBatches) {
+    const tex = g_GoopTexObjs[batch.texName];
+    if (!tex) continue;
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, batch.buffer);
+    gl.vertexAttribPointer(a_Position, 3, gl.FLOAT, false, STRIDE,  0);
+    gl.vertexAttribPointer(a_TexCoord, 2, gl.FLOAT, false, STRIDE, 12);
+    gl.vertexAttribPointer(a_Normal,   3, gl.FLOAT, false, STRIDE, 20);
+    gl.enableVertexAttribArray(a_Position);
+    gl.enableVertexAttribArray(a_TexCoord);
+    gl.enableVertexAttribArray(a_Normal);
+
+    gl.drawArrays(gl.TRIANGLES, 0, batch.vertCount);
+  }
+
   gl.depthMask(true);
+  gl.disable(gl.POLYGON_OFFSET_FILL);
   gl.disable(gl.BLEND);
   gl.uniform1i(u_whichTexture, 0);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// initAudio — sine hum + sawtooth proximity tone (legacy WebAudio)
-// Audio file playback (ambience / footsteps / wail / chase) is loaded
-// separately in initAudioFiles() once the user has clicked the title-screen
-// ENTER button (browsers require user gesture before AudioContext.resume).
-// ─────────────────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 // initAudio — just sets up an AudioContext for the file-based one-shots.
 // All previously-synthesised hum / proximity sawtooth has been removed; the
@@ -758,15 +738,48 @@ function loadTexture(texUnitEnum, src, fallbackType) {
 }
 
 function applyTexParams() {
-  // NEAREST filtering = sharp pixels, authentic Minecraft look.
-  // CLAMP_TO_EDGE is required for NPOT textures (e.g. 850×553 goop_arrow.png) —
-  // without it, WebGL 1 silently returns black for the whole texture.
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.REPEAT);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.REPEAT);
+}
+
+// CLAMP_TO_EDGE params required for NPOT textures (all goop PNGs).
+function _goopTexParams() {
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.CLAMP_TO_EDGE);
+}
+
+// Load every goop PNG into its own WebGL texture object (keyed by filename).
+// We only ever bind them to unit 4 at draw time, so no unit conflict.
+function loadGoopTextures() {
+  const allNames = [
+    ...GOOP_FLOOR_TEXTURES,
+    ...GOOP_WALL_LEFT_TEXTURES,
+    ...GOOP_WALL_RIGHT_TEXTURES,
+  ];
+  for (const name of allNames) {
+    const tex = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    // transparent 1×1 fallback: discarded by shader until real PNG loads
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                  new Uint8Array([0, 0, 0, 0]));
+    _goopTexParams();
+    g_GoopTexObjs[name] = tex;
+    const img = new Image();
+    img.onload = () => {
+      gl.activeTexture(gl.TEXTURE4);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+      _goopTexParams();
+    };
+    img.onerror = () => console.log('goop texture missing: textures/' + name);
+    img.src = 'textures/' + name;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
