@@ -1,0 +1,81 @@
+{
+  "_comment": "Frantic Backrooms-entity walk cycle. 1.0 s loop. Translations in OBJ units (~20 = full-body height). Rotations in DEGREES (Euler XYZ, applied around the named pivot). The OBJ rest pose faces +X, so 'forward swing' = rotation about Z (lateral axis), and 'side-to-side roll' = rotation about X (forward axis).",
+  "duration": 1.0,
+  "nodes": {
+
+    "body": {
+      "_comment": "Root rocking + vertical bob. Pivot near hips. X-roll = side-to-side weight shift (around forward axis), Z-tilt = subtle forward lurch (around lateral axis).",
+      "pivot": [0.0, 8.0, 0.0],
+      "keyframes": [
+        { "time": 0.00, "translation": [0,  0.00, 0], "rotation": [-4,  0,  2] },
+        { "time": 0.25, "translation": [0,  0.30, 0], "rotation": [ 4,  3, -1] },
+        { "time": 0.50, "translation": [0, -0.05, 0], "rotation": [-4,  0,  2] },
+        { "time": 0.75, "translation": [0,  0.30, 0], "rotation": [ 4, -3, -1] },
+        { "time": 1.00, "translation": [0,  0.00, 0], "rotation": [-4,  0,  2] }
+      ]
+    },
+
+    "head": {
+      "_comment": "Erratic twitching. Y = look left/right (yaw), Z = nod up/down (around lateral axis).",
+      "pivot": [0.0, 16.5, 0.0],
+      "keyframes": [
+        { "time": 0.00, "translation": [0, 0, 0], "rotation": [  4, -18,   6] },
+        { "time": 0.13, "translation": [0, 0, 0], "rotation": [ -8,  22, -10] },
+        { "time": 0.27, "translation": [0, 0, 0], "rotation": [ 12,  -6,   4] },
+        { "time": 0.41, "translation": [0, 0, 0], "rotation": [  3, -28,  12] },
+        { "time": 0.58, "translation": [0, 0, 0], "rotation": [ -9,  16,  -7] },
+        { "time": 0.72, "translation": [0, 0, 0], "rotation": [  6, -14,   9] },
+        { "time": 0.85, "translation": [0, 0, 0], "rotation": [ -3,  10,  -4] },
+        { "time": 1.00, "translation": [0, 0, 0], "rotation": [  4, -18,   6] }
+      ]
+    },
+
+    "arm_left": {
+      "_comment": "Wild flail. Z-rotation = forward/back swing at shoulder (around lateral axis); X-rotation = side splay (around forward axis).",
+      "pivot": [-0.7, 16.4, -2.3],
+      "keyframes": [
+        { "time": 0.00, "translation": [0, 0, 0], "rotation": [-22,   8,  65] },
+        { "time": 0.25, "translation": [0, 0, 0], "rotation": [ 28,  -6, -55] },
+        { "time": 0.50, "translation": [0, 0, 0], "rotation": [-30,  12,  80] },
+        { "time": 0.75, "translation": [0, 0, 0], "rotation": [ 18, -10, -45] },
+        { "time": 1.00, "translation": [0, 0, 0], "rotation": [-22,   8,  65] }
+      ]
+    },
+
+    "arm_right": {
+      "_comment": "Opposite-phase flail with different amplitudes so the arms never look mirror-symmetric.",
+      "pivot": [0.2, 16.4, 0.6],
+      "keyframes": [
+        { "time": 0.00, "translation": [0, 0, 0], "rotation": [ 20,  -7, -60] },
+        { "time": 0.25, "translation": [0, 0, 0], "rotation": [-25,  10,  70] },
+        { "time": 0.50, "translation": [0, 0, 0], "rotation": [ 26, -12, -72] },
+        { "time": 0.75, "translation": [0, 0, 0], "rotation": [-16,   8,  50] },
+        { "time": 1.00, "translation": [0, 0, 0], "rotation": [ 20,  -7, -60] }
+      ]
+    },
+
+    "leg_left": {
+      "_comment": "Walking swing about the hip. Z-rotation = forward swing (around lateral axis), classic gait.",
+      "pivot": [-0.3, 6.8, -2.0],
+      "keyframes": [
+        { "time": 0.00, "translation": [0, 0, 0], "rotation": [ 0, 0,  35] },
+        { "time": 0.25, "translation": [0, 0, 0], "rotation": [ 0, 0,   0] },
+        { "time": 0.50, "translation": [0, 0, 0], "rotation": [ 0, 0, -30] },
+        { "time": 0.75, "translation": [0, 0, 0], "rotation": [ 0, 0,   0] },
+        { "time": 1.00, "translation": [0, 0, 0], "rotation": [ 0, 0,  35] }
+      ]
+    },
+
+    "leg_right": {
+      "_comment": "Opposite-phase leg.",
+      "pivot": [0.2, 7.8, 1.4],
+      "keyframes": [
+        { "time": 0.00, "translation": [0, 0, 0], "rotation": [ 0, 0, -30] },
+        { "time": 0.25, "translation": [0, 0, 0], "rotation": [ 0, 0,   0] },
+        { "time": 0.50, "translation": [0, 0, 0], "rotation": [ 0, 0,  35] },
+        { "time": 0.75, "translation": [0, 0, 0], "rotation": [ 0, 0,   0] },
+        { "time": 1.00, "translation": [0, 0, 0], "rotation": [ 0, 0, -30] }
+      ]
+    }
+  }
+}

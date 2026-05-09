@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>The Backrooms: Entity Survival — CSE 160 Asgn 3</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0900;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      overflow: hidden;
+      font-family: 'Courier New', monospace;
+    }
+    #container { position: relative; }
+    #webgl { display: block; cursor: crosshair; }
+
+    /* ── HUD base ── */
+    #hud {
+      position: absolute; top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      color: #c8b85a;
+      user-select: none;
+    }
+
+    #fps {
+      position: absolute; top: 8px; left: 10px;
+      font-size: 12px; opacity: 0.55;
+    }
+
+    /* Countdown timer */
+    #timer {
+      position: absolute; top: 8px; left: 50%;
+      transform: translateX(-50%);
+      font-size: 24px; letter-spacing: 4px;
+      color: #c8b85a;
+      text-shadow: 0 0 12px rgba(200,184,90,0.5);
+    }
+    #timer.danger {
+      color: #ff3030;
+      text-shadow: 0 0 14px rgba(255,48,48,0.7);
+      animation: timerFlicker 0.4s ease-in-out infinite alternate;
+    }
+    @keyframes timerFlicker {
+      from { opacity: 1.0; }
+      to   { opacity: 0.55; }
+    }
+
+    #objective {
+      position: absolute; top: 44px; left: 50%;
+      transform: translateX(-50%);
+      font-size: 11px; color: rgba(200,184,90,0.45);
+      letter-spacing: 1px; white-space: nowrap;
+    }
+
+    /* Crosshair */
+    #crosshair {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 18px; height: 18px;
+    }
+    #crosshair::before, #crosshair::after {
+      content: ''; position: absolute;
+      background: rgba(200,184,90,0.7);
+    }
+    #crosshair::before { width: 2px; height: 18px; left: 8px; top: 0; }
+    #crosshair::after  { width: 18px; height: 2px; top: 8px; left: 0; }
+
+    /* Proximity / "sanity" bar */
+    #sanityContainer {
+      position: absolute; bottom: 32px; left: 50%;
+      transform: translateX(-50%);
+      width: 180px; text-align: center;
+    }
+    #sanityLabel {
+      font-size: 9px; letter-spacing: 2px;
+      color: rgba(200,184,90,0.45);
+      margin-bottom: 4px;
+    }
+    #sanityBar {
+      width: 180px; height: 4px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(200,184,90,0.25);
+    }
+    #sanityFill {
+      height: 100%;
+      background: #4aff60;
+      width: 100%;
+      transition: width 0.1s, background 0.25s;
+    }
+
+    /* Sprint stamina */
+    #sprintLabel {
+      font-size: 9px; letter-spacing: 2px;
+      color: rgba(94, 200, 255, 0.55);
+      margin: 8px 0 4px;
+    }
+    #sprintBar {
+      width: 180px; height: 4px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(94, 200, 255, 0.30);
+    }
+    #sprintFill {
+      height: 100%;
+      background: #5ec8ff;
+      width: 100%;
+      transition: width 0.05s linear, background 0.25s;
+    }
+
+    #controls {
+      position: absolute; bottom: 8px; left: 50%;
+      transform: translateX(-50%);
+      font-size: 10px; color: rgba(200,184,90,0.28);
+      white-space: nowrap;
+    }
+
+    /* Pointer-lock prompt */
+    #lockMsg {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0,0,0,0.85);
+      padding: 20px 32px; border-radius: 6px;
+      font-size: 16px; text-align: center;
+      border: 1px solid rgba(200,184,90,0.22);
+      color: #c8b85a;
+    }
+    #lockMsg small { display: block; margin-top: 6px; color: #666; font-size: 12px; }
+
+    /* ── Full-screen overlays ── */
+    .overlay {
+      display: none;
+      position: absolute; top: 0; left: 0;
+      width: 100%; height: 100%;
+      justify-content: center; align-items: center;
+      flex-direction: column; text-align: center;
+      pointer-events: none;
+    }
+    .overlay.active { display: flex; }
+
+    /* Jumpscare red flash */
+    #jumpscareOverlay { background: rgba(160, 0, 0, 0.0); transition: background 0.05s; }
+    #jumpscareOverlay.flash { background: rgba(160, 0, 0, 0.88); }
+
+    /* Lose screen */
+    #loseScreen { background: rgba(0,0,0,0.93); }
+    #loseScreen h1 {
+      font-size: 52px; color: #cc2222; letter-spacing: 5px;
+      text-shadow: 0 0 20px #cc2222;
+      animation: endPulse 1.2s ease-in-out infinite alternate;
+    }
+    #loseScreen p { font-size: 15px; color: #777; margin-top: 14px; }
+
+    /* Win screen */
+    #winScreen { background: rgba(0,0,0,0.93); }
+    #winScreen h1 {
+      font-size: 52px; color: #c8b85a; letter-spacing: 5px;
+      text-shadow: 0 0 20px #c8b85a;
+    }
+    #winScreen p { font-size: 15px; color: #999; margin-top: 14px; }
+
+    /* pause overlay: dim screen, centred yellow text */
+    #pauseScreen { background: rgba(0,0,0,0.82); }
+    /* when active the pause menu must be interactive */
+    #pauseScreen.active { pointer-events: auto; }
+    #pauseScreen h1 {
+      font-size: 56px; letter-spacing: 14px; color: #f5d83a;
+      text-shadow: 0 0 18px rgba(245,216,58,0.6);
+      margin: 0;
+    }
+    #pauseScreen p { font-size: 13px; color: #aaa; margin-top: 18px; letter-spacing: 4px; }
+    .pauseMenu {
+      margin-top: 24px;
+      display: flex; flex-direction: column; gap: 14px;
+      background: rgba(20,20,20,0.55);
+      border: 1px solid rgba(245,216,58,0.35);
+      padding: 22px 30px;
+      min-width: 360px;
+      font-family: 'Courier New', monospace;
+      color: #ddd;
+    }
+    .pauseRow {
+      display: flex; align-items: center; gap: 10px;
+      font-size: 14px; letter-spacing: 2px;
+    }
+    .pauseRow input[type=range] { flex: 1; accent-color: #f5d83a; }
+    .pauseRow #pauseVolumeVal { width: 50px; text-align: right; color: #f5d83a; }
+    .pauseButtons { justify-content: space-between; }
+    .pauseMenu button {
+      background: #1c1c1c; color: #f5d83a;
+      border: 1px solid #f5d83a; padding: 8px 16px;
+      font-family: 'Courier New', monospace; font-size: 13px; letter-spacing: 3px;
+      cursor: pointer;
+    }
+    .pauseMenu button:hover { background: #f5d83a; color: #1c1c1c; }
+
+    /* round-reset banner across the top of the screen */
+    #roundBanner {
+      position: fixed; top: 14%; left: 0; right: 0;
+      text-align: center; pointer-events: none;
+      font-family: 'Courier New', monospace; font-size: 30px;
+      letter-spacing: 7px; color: #f5d83a;
+      text-shadow: 0 0 14px rgba(245,216,58,0.7);
+      opacity: 0; transition: opacity 0.4s; z-index: 50;
+    }
+    #roundBanner.show { opacity: 1; }
+
+    @keyframes endPulse {
+      from { text-shadow: 0 0 12px #cc2222; }
+      to   { text-shadow: 0 0 36px #cc2222, 0 0 70px #660000; }
+    }
+
+    /* ── Title / disclaimer screen ── */
+    /* Use position: fixed so the overlay covers the whole viewport, not just
+       the 800×600 canvas. Otherwise on small windows the ENTER button slides
+       below the canvas and becomes unclickable. */
+    #titleScreen {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100vw; height: 100vh;
+      background: rgba(0, 0, 0, 0.96);
+      pointer-events: auto;     /* override .overlay's pointer-events: none */
+      padding: 24px;
+      overflow-y: auto;
+      z-index: 100;
+    }
+    #titleScreen h1 {
+      font-size: 44px; color: #c8b85a; letter-spacing: 8px;
+      text-shadow: 0 0 22px rgba(200,184,90,0.55);
+      margin-bottom: 4px;
+    }
+    #titleScreen .tagline {
+      color: rgba(200,184,90,0.55); letter-spacing: 4px;
+      font-size: 11px; margin-bottom: 18px;
+    }
+    #titleScreen .disclaimer {
+      max-width: 560px;
+      background: rgba(160, 30, 30, 0.12);
+      border: 1px solid rgba(255, 80, 80, 0.4);
+      padding: 12px 18px;
+      color: #ffb0b0;
+      font-size: 12px;
+      line-height: 1.5;
+      margin-bottom: 14px;
+    }
+    #titleScreen .disclaimer strong { color: #ff6060; letter-spacing: 2px; }
+    #titleScreen .opts {
+      color: #c8b85a; font-size: 12px; margin-bottom: 16px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    #titleScreen .opts input { transform: scale(1.2); cursor: pointer; }
+    #titleScreen .opts label  { cursor: pointer; user-select: none; }
+    #startBtn {
+      pointer-events: auto;
+      background: #1a1500;
+      color: #c8b85a;
+      border: 2px solid #c8b85a;
+      padding: 12px 36px;
+      font: 18px 'Courier New', monospace;
+      letter-spacing: 6px;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s;
+      margin-bottom: 4px;
+    }
+    #startBtn:hover { background: #c8b85a; color: #0a0900; }
+    #titleScreen .credits {
+      margin-top: 20px;
+      max-width: 620px;
+      font-size: 9px;
+      color: rgba(200,184,90,0.4);
+      line-height: 1.6;
+      text-align: left;
+    }
+    #titleScreen .credits h3 {
+      font-size: 10px;
+      color: rgba(200,184,90,0.55);
+      letter-spacing: 3px;
+      margin-bottom: 6px;
+    }
+    #titleScreen .credits a { color: rgba(200,184,90,0.65); }
+
+    /* ── Fullscreen toggle button (lives on the title screen) ── */
+    #fullscreenBtn {
+      pointer-events: auto;
+      background: rgba(0,0,0,0.5);
+      color: rgba(200,184,90,0.85);
+      border: 1px solid rgba(200,184,90,0.55);
+      padding: 6px 14px;
+      font: 11px 'Courier New', monospace;
+      letter-spacing: 2px;
+      cursor: pointer;
+      margin-left: 18px;
+    }
+    #fullscreenBtn:hover { background: rgba(200,184,90,0.18); color: #c8b85a; }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <canvas id="webgl" width="800" height="600"></canvas>
+    <div id="hud">
+      <div id="fps">FPS: --</div>
+      <div id="timer">02:00</div>
+      <div id="objective">FIND THE EXIT DOOR BEFORE TIME RUNS OUT</div>
+      <div id="crosshair"></div>
+      <div id="sanityContainer">
+        <div id="sanityLabel">PROXIMITY</div>
+        <div id="sanityBar"><div id="sanityFill"></div></div>
+        <div id="sprintLabel">STAMINA</div>
+        <div id="sprintBar"><div id="sprintFill"></div></div>
+      </div>
+      <div id="controls">
+        WASD&nbsp;=&nbsp;Move &nbsp;|&nbsp; SHIFT&nbsp;=&nbsp;Sprint &nbsp;|&nbsp; Mouse&nbsp;=&nbsp;Look &nbsp;|&nbsp; Q/E&nbsp;=&nbsp;Turn &nbsp;|&nbsp; LMB&nbsp;=&nbsp;Interact with door
+      </div>
+      <div id="lockMsg">
+        Click to enter
+        <small>Esc to release mouse</small>
+      </div>
+    </div>
+
+    <!-- Full-screen overlays -->
+    <div id="jumpscareOverlay" class="overlay"></div>
+    <div id="loseScreen" class="overlay">
+      <h1>IT GOT YOU</h1>
+      <p>You heard it. You felt it. Then nothing.</p>
+      <p style="margin-top:28px;color:#444;font-size:11px;">Refresh to try again</p>
+    </div>
+    <div id="winScreen" class="overlay">
+      <h1>YOU ESCAPED</h1>
+      <p>The door slammed behind you. You're out.</p>
+      <p style="margin-top:28px;color:#555;font-size:11px;">Refresh to play again</p>
+    </div>
+    <div id="pauseScreen" class="overlay">
+      <h1>PAUSED</h1>
+      <div class="pauseMenu">
+        <div class="pauseRow">
+          <input type="checkbox" id="pauseFlickerCb">
+          <label for="pauseFlickerCb">Disable flickering lights</label>
+        </div>
+        <div class="pauseRow">
+          <label for="pauseVolume">Master volume</label>
+          <input type="range" id="pauseVolume" min="0" max="100" value="100">
+          <span id="pauseVolumeVal">100%</span>
+        </div>
+        <div class="pauseRow pauseButtons">
+          <button id="pauseFsBtn" type="button">FULLSCREEN</button>
+          <button id="pauseResumeBtn" type="button">RESUME</button>
+        </div>
+      </div>
+      <p>Press ESC or click RESUME to continue.</p>
+    </div>
+    <div id="roundBanner"></div>
+
+    <!-- Title / disclaimer (shown by default — must click ENTER to begin) -->
+    <div id="titleScreen" class="overlay active">
+      <h1>THE BACKROOMS</h1>
+      <div class="tagline">ENTITY SURVIVAL</div>
+      <div class="disclaimer">
+        <strong>WARNING — PHOTOSENSITIVITY</strong><br>
+        This game contains rapidly flickering fluorescent lights, sudden
+        screen flashes, and disorienting low-visibility environments. If you
+        are sensitive to flashing imagery, please tick the option below to
+        disable the flicker effect before entering.
+      </div>
+      <div class="opts">
+        <input type="checkbox" id="disableFlicker">
+        <label for="disableFlicker">Disable flickering lights</label>
+        <button id="fullscreenBtn" type="button">FULLSCREEN</button>
+      </div>
+      <button id="startBtn" type="button">ENTER</button>
+      <div class="credits">
+        <h3>AUDIO ATTRIBUTIONS</h3>
+        Backrooms Ambience by Resaural — <a href="https://freesound.org/s/626096/" target="_blank" rel="noopener">https://freesound.org/s/626096/</a> — License: Creative Commons 0<br>
+        Sound Effect by <a href="https://pixabay.com/users/bryansantosbreton-40689938/?utm_source=link-attribution&amp;utm_medium=referral&amp;utm_campaign=music&amp;utm_content=177771" target="_blank" rel="noopener">Bryan Jesus De Los Santos Breton</a> from <a href="https://pixabay.com//?utm_source=link-attribution&amp;utm_medium=referral&amp;utm_campaign=music&amp;utm_content=177771" target="_blank" rel="noopener">Pixabay</a><br>
+        Additional footstep / wail / chase one-shots sourced from Pixabay (Pixabay Content License — free for commercial use, no attribution required).<br>
+        <h3 style="margin-top:14px">3D MODEL ATTRIBUTION</h3>
+        <a href="https://sketchfab.com/3d-models/backrooms-bacteria-rigged-3d-model-unofficial-6687b19f281b452f8d222d22ae3b1e9c" target="_blank" rel="noopener">Backrooms Bacteria Rigged 3D Model (Unofficial)</a>
+        by <a href="https://sketchfab.com/chives1996" target="_blank" rel="noopener">spy_dogg</a>
+        on <a href="https://sketchfab.com" target="_blank" rel="noopener">Sketchfab</a>.
+        Unofficial fan-made model based on the creature "Bacteria" from
+        <a href="https://www.youtube.com/c/KANEpixels/featured" target="_blank" rel="noopener">Kane Pixels' Backrooms series</a>.<br>
+        "furniture pack" by the soppy prisma models —
+        <a href="https://skfb.ly/pInCY" target="_blank" rel="noopener">https://skfb.ly/pInCY</a>
+        — licensed under Creative Commons Attribution 4.0
+        (<a href="http://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC-BY 4.0</a>).<br>
+        "Chair 3D Model 253" by alexdizz on free3d.com —
+        <a href="https://free3d.com/3d-model/chair-255345.html" target="_blank" rel="noopener">https://free3d.com/3d-model/chair-255345.html</a>
+        (Personal Use License).<br>
+        <span style="opacity:0.7">Find the exit door before time runs out. Something is hunting you.</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Libraries -->
+  <script src="lib/cuon-matrix-cse160.js"></script>
+  <script src="webgl-utils.js"></script>
+
+  <!-- Game modules (load order matters) -->
+  <script src="shaders.js"></script>
+  <script src="cube.js"></script>
+  <script src="objLoader.js"></script>
+  <script src="world.js"></script>
+  <script src="camera.js"></script>
+  <script src="entity_model.js"></script>  <!-- baked geometry; run models/bake_entity.py to (re)generate -->
+  <script src="animSystem.js"></script>
+  <script src="entity.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>
