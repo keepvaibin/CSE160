@@ -13,11 +13,29 @@
 //   3 = door     (oak door)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const MAP_SIZE   = 96;  // sprawling Backrooms-scale grid (9216 cells)
-const WALL_H     = 4;   // all walls are exactly 4 units tall
+const LEVEL1_MAP_SIZE = 32;
+const LEVEL2_MAP_SIZE = 96;
+var MAP_SIZE   = LEVEL2_MAP_SIZE;  // current active grid size (32 for suburbs, 96 for Backrooms)
+const WALL_H     = 4;   // default full-height Backrooms wall height
 const DOOR_TYPE  = 3;   // g_MapType value for exit door cells
 const DOOR_HEIGHT = 2;  // door cells render door texture only up to y<2; wall above
 const LIGHT_TYPE = 2;   // g_CeilType value for ceiling cells that are light tiles
+
+const LEVEL_SUBURBS = 1;
+const LEVEL_BACKROOMS = 2;
+
+const INTERACT_NONE = 0;
+const INTERACT_WEED = 1;
+const INTERACT_SOIL_BAG = 2;
+const INTERACT_WATER_CAN = 3;
+const INTERACT_CAN_RETURN = 6;
+const INTERACT_SIGN = 7;
+const INTERACT_GARDEN_PLOT = 8;
+const INTERACT_GRASS_ROW = 9;
+
+const SUBURB_GRASS_FLOOR_TEX = 'grass.png';
+const SUBURB_DOOR_BOTTOM_TEX = 'Oak_Door_(bottom_texture)_JE4_BE2.png';
+const SUBURB_DOOR_TOP_TEX = 'Oak_Door_(top_texture)_JE5_BE3.png';
 
 // Anchors filled in by initMap() so other modules don't hard-code coordinates.
 var SPAWN_X     = 5.5;
@@ -28,6 +46,10 @@ var DOOR_CELL_X    = 94;
 var DOOR_CELL_Z    = 88;
 var DOOR_APPROACH_X = 92.5;
 var DOOR_APPROACH_Z = 88.5;
+
+// Current level (1 = hardcoded intro, 2 = procedural Backrooms, 3 = TBD).
+// Set this before calling initMap() to switch which level is loaded.
+var g_currentLevel = LEVEL_SUBURBS;
 
 // world-space positions of every actively-illuminating ceiling fixture.
 // capped at MAX_LIGHTS (8) in main.js — the rest of the light tiles are
@@ -42,9 +64,74 @@ var g_FurnitureSlots = [];
 var g_Map     = [];   // g_Map[x][z]     — 0=open, 4=wall
 var g_MapType = [];   // g_MapType[x][z] — 0=wall-tex, 3=door-tex
 var g_CeilType = [];  // g_CeilType[x][z] — 0=plain ceiling, 2=light tile
+var g_CollisionMap = [];    // invisible blockers (fence/porch/trapped invisible walls)
+var g_InteractiveMap = [];  // interaction codes for LMB/E style actions
+var g_SuburbFloorTex = [];  // per-cell floor texture name for level 1
+var g_SuburbWallTex  = [];  // per-cell cube/wall texture name for level 1
+var g_LevelItemSlots = [];  // small item cubes/signs: {type,x,z,texName,color,height}
+var g_LevelModelSlots = []; // OBJ models (fence): {kind,x,z,yaw,length,height,color}
+var g_levelSpawnYaw = 90;
+var g_skyColor = [0.53, 0.81, 0.98, 1.0];
+
+var g_suburbBatches = [];   // [{texName, buffer, vertCount}] for dynamic sampler5 drawing
 
 var g_worldBuffers    = [null, null, null, null];
 var g_worldVertCounts = [0, 0, 0, 0];
+const WORLD_CHUNK_SIZE = 8;
+var g_worldChunks = [];
+
+// Hardcoded 32×32 Level 1 layout for the lab spec.  Rows are z, columns are x.
+// Values are visible cube heights: 0=open, 1=short block, 2=medium, 3=tall, 4=full wall.
+// Fence collision/rendering is stored separately because the fence is an OBJ model.
+const map_suburbs = [
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,4,4,4,4,4,4,4,4,0,0,0,0,4,4,4,4,4,4,4,4,0,0,0,0,0,0],
+  [0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0],
+  [0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0],
+  [0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0],
+  [0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0],
+  [0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0],
+  [0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0],
+  [0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0],
+  [0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0],
+  [0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0],
+  [0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0],
+  [0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0],
+  [0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0],
+  [0,0,0,0,0,0,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,0,0,0,0,0,0],
+  [4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4]
+];
+
+function _blankLayer(size, fill) {
+  const layer = [];
+  for (let x = 0; x < size; x++) layer[x] = new Array(size).fill(fill);
+  return layer;
+}
+
+function _copyRowsToXZ(rows) {
+  const size = rows.length;
+  const out = _blankLayer(size, 0);
+  for (let z = 0; z < size; z++)
+    for (let x = 0; x < size; x++)
+      out[x][z] = rows[z][x];
+  return out;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // initWorldBuffers
@@ -56,10 +143,8 @@ function initWorldBuffers() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// initMap — build the hardcoded 32×32 Backrooms maze
-// ─────────────────────────────────────────────────────────────────────────────
-// ───────────────────────────────────────────────────────────────────────────────
-// initMap — procedural Backrooms (Level 0) generator
+// initLevel2Map — procedural Backrooms Level 2 generator
+// Random layout every play-through (seeded from wall-clock + Math.random).
 // ───────────────────────────────────────────────────────────────────────────────
 //
 // Algorithm rationale ("liminal" — not a perfect maze):
@@ -86,10 +171,21 @@ function initWorldBuffers() {
 //         touches a wall — it stands alone in the middle of the floor.
 //     (6) Mark a single wall cell on the east side as the exit door.
 // ───────────────────────────────────────────────────────────────────────────────
-function initMap() {
-  // Deterministic LCG (so the layout is identical every reload — helps
-  // testing and means the rubric grader sees the same map I do).
-  let _seed = 0x9E3779B1;
+function initLevel2Map() {
+  MAP_SIZE = LEVEL2_MAP_SIZE;
+  g_currentLevel = LEVEL_BACKROOMS;
+  g_Map = [];
+  g_MapType = [];
+  g_CeilType = [];
+  g_CollisionMap = _blankLayer(MAP_SIZE, 0);
+  g_InteractiveMap = _blankLayer(MAP_SIZE, INTERACT_NONE);
+  g_SuburbFloorTex = [];
+  g_SuburbWallTex = [];
+  g_LevelItemSlots = [];
+  g_LevelModelSlots = [];
+  g_suburbBatches = [];
+  // Non-deterministic seed: different layout every play-through.
+  let _seed = ((Date.now() | 0) ^ 0x9E3779B1) ^ ((Math.random() * 0x7fffffff) | 0) | 1;
   function rng() {
     _seed = (_seed * 1664525 + 1013904223) | 0;
     return ((_seed >>> 0) / 0x100000000);
@@ -177,11 +273,24 @@ function initMap() {
     else        carve(Math.min(ex, b.cx), b.cz - half, Math.max(ex, b.cx), b.cz + half);
   }
   for (let i = 0; i < rooms.length - 1; i++) carveCorridor(rooms[i], rooms[i + 1]);
-  // few extra loops keeps mostly-directed routes
-  for (let k = 0; k < 4; k++) {
+  // Many extra random loop connections to reduce dead ends.
+  for (let k = 0; k < 20; k++) {
     const a = rooms[Math.floor(rng() * rooms.length)];
     const b = rooms[Math.floor(rng() * rooms.length)];
     if (a !== b) carveCorridor(a, b);
+  }
+  // Nearest-neighbour connections: for every room, connect to its 2
+  // closest rooms (centre-to-centre).  Ensures no cluster is isolated.
+  for (let i = 0; i < rooms.length; i++) {
+    const ra = rooms[i];
+    const byDist = rooms
+      .map((rb, j) => ({ j, d2: (ra.cx - rb.cx) * (ra.cx - rb.cx)
+                                  + (ra.cz - rb.cz) * (ra.cz - rb.cz) }))
+      .filter(e => e.j !== i)
+      .sort((a, b) => a.d2 - b.d2);
+    for (let k = 0; k < Math.min(2, byDist.length); k++) {
+      carveCorridor(ra, rooms[byDist[k].j]);
+    }
   }
 
   // (4) Connectivity sweep: any open cell unreachable from the spawn cell
@@ -269,8 +378,13 @@ function initMap() {
   DOOR_CELL_X = 94; DOOR_CELL_Z = 88;
   g_Map[DOOR_CELL_X][DOOR_CELL_Z]     = WALL_H;
   g_MapType[DOOR_CELL_X][DOOR_CELL_Z] = DOOR_TYPE;
-  // Force the approach cells open so the player can actually reach the door
-  for (let x = 90; x <= 93; x++) g_Map[x][88] = 0;
+  // Force a small open foyer in front of the door so the exit is reachable
+  // and readable instead of being a one-cell dead-end against wallpaper.
+  for (let x = 90; x <= 93; x++) {
+    for (let z = 87; z <= 89; z++) g_Map[x][z] = 0;
+  }
+  const doorReachX = DOOR_CELL_X - 1;
+  const doorReachZ = DOOR_CELL_Z;
 
   // (7) Obstruction pass — break up any long straight sightline so the
   //     player can't just sprint in a single direction across the map.
@@ -306,7 +420,7 @@ function initMap() {
     const inDoorRoom  = bx >= rooms[1].x0 && bx <= rooms[1].x1 && bz >= rooms[1].z0 && bz <= rooms[1].z1;
     if (inSpawnRoom || inDoorRoom) return false;
     g_Map[bx][bz] = WALL_H;
-    if (!bfsReach(spawnCellX, spawnCellZ, DOOR_CELL_X, DOOR_CELL_Z)) {
+    if (!bfsReach(spawnCellX, spawnCellZ, doorReachX, doorReachZ)) {
       g_Map[bx][bz] = 0;       // rollback
       return false;
     }
@@ -358,6 +472,42 @@ function initMap() {
   for (let z = 0; z < MAP_SIZE; z++) breakRow(z);
   for (let x = 0; x < MAP_SIZE; x++) breakCol(x);
 
+  // Dead-end cleanup — after the sightline obstruction pass, carve one
+  // extra exit from any open cell that has ≤1 open cardinal neighbour.
+  // 3 iterations handles chains of dead ends introduced by the pass.
+  for (let dePass = 0; dePass < 3; dePass++) {
+    for (let x = 1; x < MAP_SIZE - 1; x++) {
+      for (let z = 1; z < MAP_SIZE - 1; z++) {
+        if (g_Map[x][z] !== 0) continue;
+        const d4 = [[1,0],[-1,0],[0,1],[0,-1]];
+        let openCnt = 0;
+        for (const [dx, dz] of d4) if (g_Map[x+dx][z+dz] === 0) openCnt++;
+        if (openCnt > 1) continue;
+        // Shuffle so we don't always carve the same direction
+        d4.sort(() => rng() - 0.5);
+        for (const [dx, dz] of d4) {
+          const nx = x + dx, nz = z + dz;
+          if (nx < 1 || nx > MAP_SIZE-2 || nz < 1 || nz > MAP_SIZE-2) continue;
+          if (g_Map[nx][nz] === 0) continue;
+          g_Map[nx][nz] = 0;
+          if (!bfsReach(spawnCellX, spawnCellZ, doorReachX, doorReachZ)) {
+            g_Map[nx][nz] = WALL_H;   // rollback: would disconnect door
+          } else {
+            break;                    // success — one exit is enough
+          }
+        }
+      }
+    }
+  }
+
+  // Final exit alcove: one open tile directly in front of the door, with
+  // wall cells on both sides so the door reads as a framed, intentional exit.
+  g_Map[doorReachX][doorReachZ] = 0;
+  g_Map[doorReachX][doorReachZ - 1] = WALL_H;
+  g_Map[doorReachX][doorReachZ + 1] = WALL_H;
+  g_MapType[doorReachX][doorReachZ - 1] = 0;
+  g_MapType[doorReachX][doorReachZ + 1] = 0;
+
   // (8) Place ceiling light tiles.  Every ~7 cells we drop a light tile on
   //     any open ceiling cell.  The first 8 placements are also added to
   //     g_LightPositions so they actually contribute illumination via the
@@ -400,16 +550,21 @@ function initMap() {
   if (g_CeilType[anchors[0].cx][anchors[0].cz] !== LIGHT_TYPE) {
     g_CeilType[anchors[0].cx][anchors[0].cz] = LIGHT_TYPE;
   }
-  if (g_LightPositions.length < 8) {
-    g_LightPositions.unshift([anchors[0].cx + 0.5, 3.8, anchors[0].cz + 0.5]);
-    if (g_LightPositions.length > 8) g_LightPositions.length = 8;
-  }
+  g_CeilType[doorReachX][doorReachZ] = LIGHT_TYPE;
+  g_CeilType[doorReachX - 1][doorReachZ] = LIGHT_TYPE;
+  g_LightPositions = g_LightPositions.filter(p => Math.abs(p[0] - (anchors[0].cx + 0.5)) > 0.01 || Math.abs(p[2] - (anchors[0].cz + 0.5)) > 0.01);
+  g_LightPositions = g_LightPositions.filter(p => Math.abs(p[0] - (doorReachX + 0.5)) > 0.01 || Math.abs(p[2] - (doorReachZ + 0.5)) > 0.01);
+  g_LightPositions.unshift([anchors[0].cx + 0.5, 3.8, anchors[0].cz + 0.5]);
+  g_LightPositions.unshift([doorReachX + 0.5, 3.8, doorReachZ + 0.5]);
+  if (g_LightPositions.length > 8) g_LightPositions.length = 8;
   console.log('[world] light positions:', g_LightPositions.length);
 
   // Update spawn anchors to match
   SPAWN_X = anchors[0].cx + 0.5; SPAWN_Z = anchors[0].cz + 0.5;
   ENTITY_SPAWN_X = anchors[2].cx + 0.5; ENTITY_SPAWN_Z = anchors[2].cz + 0.5;
   DOOR_APPROACH_X = 92.5; DOOR_APPROACH_Z = 88.5;
+  g_levelSpawnYaw = 0;  // face +X, toward the intro sign
+  g_skyColor = [0.92, 0.85, 0.22, 1.0];
 
   // (9) furniture placement. drop one piece in the centre-ish of every
   // "big" room, plus a few extras in random rooms. each entry stores the
@@ -444,6 +599,263 @@ function initMap() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// initLevel1Map — hand-authored 32×32 suburb tutorial map
+// ─────────────────────────────────────────────────────────────────────────────
+function initLevel1Map() {
+  MAP_SIZE = LEVEL1_MAP_SIZE;
+  g_currentLevel = LEVEL_SUBURBS;
+  g_Map = _copyRowsToXZ(map_suburbs);
+  g_MapType = _blankLayer(MAP_SIZE, 0);
+  g_CeilType = _blankLayer(MAP_SIZE, 0);
+  g_CollisionMap = _blankLayer(MAP_SIZE, 0);
+  g_InteractiveMap = _blankLayer(MAP_SIZE, INTERACT_NONE);
+  g_SuburbFloorTex = _blankLayer(MAP_SIZE, SUBURB_GRASS_FLOOR_TEX);
+  g_SuburbWallTex = _blankLayer(MAP_SIZE, 'housewall.png');
+  g_LevelItemSlots = [];
+  g_LevelModelSlots = [];
+  g_FurnitureSlots = [];
+  g_suburbBatches = [];
+
+  // Floor texture bands: a short road, sidewalk, lawn, porch, and house floor.
+  for (let x = 0; x < MAP_SIZE; x++) {
+    for (let z = 0; z < MAP_SIZE; z++) {
+      if (z <= 1) g_SuburbFloorTex[x][z] = 'road.png';
+      else if (z === 2) g_SuburbFloorTex[x][z] = 'sidewalk.png';
+      else if (z >= 15 && z <= 16 && x >= 13 && x <= 18) g_SuburbFloorTex[x][z] = 'woodendeck.png';
+      else if (z >= 17 && z <= 30 && x >= 7 && x <= 24) g_SuburbFloorTex[x][z] = 'woodendeck.png';
+      else g_SuburbFloorTex[x][z] = SUBURB_GRASS_FLOOR_TEX;
+      if (g_Map[x][z] > 0) g_SuburbWallTex[x][z] = 'housewall.png';
+      if (x === 8 && z >= 7 && z <= 9) g_SuburbWallTex[x][z] = 'grass.png';
+    }
+  }
+
+  function block(x, z) {
+    if (x >= 0 && x < MAP_SIZE && z >= 0 && z < MAP_SIZE) g_CollisionMap[x][z] = 1;
+  }
+  function interact(x, z, code) {
+    if (x >= 0 && x < MAP_SIZE && z >= 0 && z < MAP_SIZE) g_InteractiveMap[x][z] = code;
+  }
+
+  // Invisible collision where the OBJ fence sits.  The visible fence is NOT cubes.
+  for (let x = 5; x <= 13; x++) { block(x, 3); block(x, 14); }
+  for (let x = 18; x <= 26; x++) { block(x, 3); block(x, 14); }
+  for (let z = 4; z <= 13; z++) { block(5, z); block(26, z); }
+  for (let z = 3; z < MAP_SIZE; z++) { block(0, z); block(31, z); }
+
+  // Fence OBJ instances.  kind='fence' is loaded from models/fence.obj in main.js.
+  g_LevelModelSlots.push({ kind: 'fence', x: 9.5,  z: 3.35,  yaw: 90, length: 9.0,  height: 1.45, color: [0.62,0.40,0.22,1] });
+  g_LevelModelSlots.push({ kind: 'fence', x: 22.5, z: 3.35,  yaw: 90, length: 9.0,  height: 1.45, color: [0.62,0.40,0.22,1] });
+  g_LevelModelSlots.push({ kind: 'fence', x: 9.5,  z: 14.45, yaw: 90, length: 9.0,  height: 1.45, color: [0.62,0.40,0.22,1] });
+  g_LevelModelSlots.push({ kind: 'fence', x: 22.5, z: 14.45, yaw: 90, length: 9.0,  height: 1.45, color: [0.62,0.40,0.22,1] });
+  g_LevelModelSlots.push({ kind: 'fence', x: 5.35,  z: 8.8,  yaw: 0,  length: 10.5, height: 1.45, color: [0.62,0.40,0.22,1] });
+  g_LevelModelSlots.push({ kind: 'fence', x: 26.65, z: 8.8,  yaw: 0,  length: 10.5, height: 1.45, color: [0.62,0.40,0.22,1] });
+
+  // Garden: 3x2 weeds on grass; the weed visuals are OBJ models, not tall cubes.
+  for (let gx = 22; gx <= 24; gx++) {
+    for (let gz = 7; gz <= 8; gz++) {
+      g_Map[gx][gz] = 0;
+      g_SuburbFloorTex[gx][gz] = SUBURB_GRASS_FLOOR_TEX;
+      g_LevelModelSlots.push({ kind: 'weeds', x: gx + 0.5, z: gz + 0.5, yaw: 0, width: 0.85, length: 0.85, height: 0.42, color: [0.28,0.70,0.22,1] });
+      interact(gx, gz, INTERACT_WEED);
+    }
+  }
+
+  // Interactable items use small drawn cubes, not wall collision.
+  interact(21, 6, INTERACT_SOIL_BAG);
+  interact(21, 9, INTERACT_WATER_CAN);
+  for (let gz = 7; gz <= 9; gz++) interact(8, gz, INTERACT_GRASS_ROW);
+  g_LevelItemSlots.push({ type: 'soil_bag', x: 21, z: 6, texName: 'dirt_unwatered.png', height: 0.55, color: [0.42,0.25,0.10,1] });
+  g_LevelItemSlots.push({ type: 'watering_can', x: 21, z: 9, texName: 'woodendeck.png', height: 0.45, color: [0.45,0.66,0.75,1] });
+
+  // Daylight-like point lights keep Level 1 bright while still using the shader.
+  g_LightPositions = [
+    [8.0, 8.0, 8.0], [24.0, 8.0, 8.0], [16.0, 8.0, 20.0], [16.0, 8.0, 2.0]
+  ];
+  SPAWN_X = 15.5; SPAWN_Z = 1.5;
+  ENTITY_SPAWN_X = 48.5; ENTITY_SPAWN_Z = 48.5;
+  DOOR_CELL_X = -1; DOOR_CELL_Z = -1;
+  DOOR_APPROACH_X = 15.5; DOOR_APPROACH_Z = 16.0;
+  g_levelSpawnYaw = 90;  // face +Z toward the house
+  g_skyColor = [0.53, 0.81, 0.98, 1.0];
+}
+
+// Level 3: third level (to be designed later).  Fallback keeps the game stable.
+function initLevel3Map() {
+  console.warn('[world] Level 3 not yet implemented — falling back to Level 2.');
+  initLevel2Map();
+}
+
+function setupBackroomsIntroSign() {
+  const sx = Math.min(MAP_SIZE - 2, Math.floor(SPAWN_X + 2.0));
+  const sz = Math.floor(SPAWN_Z);
+  if (sx >= 0 && sx < MAP_SIZE && sz >= 0 && sz < MAP_SIZE) {
+    g_Map[sx][sz] = 0;
+    g_CollisionMap[sx][sz] = 1;
+    g_InteractiveMap[sx][sz] = INTERACT_SIGN;
+    g_LevelModelSlots.push({ kind: 'sign', x: sx + 0.5, z: sz + 0.5, yaw: 0, width: 0.22, length: 1.35, height: 1.65, texName: 'Sofa1_diff.png', color: [1,1,1,1] });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// initMap/loadLevel — level dispatcher and memory swapper
+// ─────────────────────────────────────────────────────────────────────────────
+function initMap() {
+  if (g_currentLevel === LEVEL_SUBURBS) initLevel1Map();
+  else if (g_currentLevel === 3) initLevel3Map();
+  else initLevel2Map();
+}
+
+function loadLevel(levelID) {
+  if (levelID === LEVEL_SUBURBS) {
+    initLevel1Map();
+  } else {
+    initLevel2Map();
+    setupBackroomsIntroSign();
+  }
+
+  if (camera) {
+    const safeX = (levelID === LEVEL_BACKROOMS) ? 6.5 : SPAWN_X;
+    const safeZ = (levelID === LEVEL_BACKROOMS) ? 6.5 : SPAWN_Z;
+    camera.eye.elements[0] = safeX;
+    camera.eye.elements[1] = (typeof EYE_HEIGHT !== 'undefined') ? EYE_HEIGHT : 1.62;
+    camera.eye.elements[2] = safeZ;
+    camera.yaw = g_levelSpawnYaw;
+    camera.pitch = 0;
+    if (typeof camera.updateProjectionMatrix === 'function' && typeof canvas !== 'undefined' && canvas) {
+      camera.updateProjectionMatrix(canvas.width, canvas.height);
+    }
+    camera.updateViewMatrix();
+  }
+
+  if (typeof g_timer !== 'undefined') g_timer = ROUND_SECONDS;
+  if (typeof g_entitySpeedMult !== 'undefined' && levelID === LEVEL_BACKROOMS) g_entitySpeedMult = 1.0;
+
+  buildWorldGeometry();
+  if (levelID === LEVEL_BACKROOMS) {
+    assignGoopTiles();
+    buildGoopGeometry();
+  } else {
+    if (typeof g_goopFloorCells !== 'undefined') g_goopFloorCells.clear();
+    if (typeof g_goopWallFaces !== 'undefined') g_goopWallFaces.clear();
+    if (typeof buildGoopGeometry === 'function') buildGoopGeometry();
+  }
+  if (typeof uploadLightPositions === 'function') uploadLightPositions();
+
+  if (gl) {
+    if (typeof u_isBackrooms !== 'undefined') gl.uniform1i(u_isBackrooms, levelID === LEVEL_BACKROOMS ? 1 : 0);
+    if (levelID === LEVEL_SUBURBS) {
+      gl.clearColor(g_skyColor[0], g_skyColor[1], g_skyColor[2], 1.0);
+      if (u_fogNear) gl.uniform1f(u_fogNear, 6.0);
+      if (u_fogFar)  gl.uniform1f(u_fogFar,  24.0);
+      if (u_fogColor) gl.uniform3f(u_fogColor, g_skyColor[0], g_skyColor[1], g_skyColor[2]);
+      document.body.classList.add('level-suburbs');
+      document.body.classList.remove('level-backrooms', 'level-backrooms-trapped');
+      if (typeof g_ambienceEl !== 'undefined' && g_ambienceEl) g_ambienceEl.volume = 0.0;
+    } else {
+      gl.clearColor(FOG_R, FOG_G, FOG_B, 1.0);
+      if (typeof applyLevelFogSettings === 'function') {
+        applyLevelFogSettings();
+      } else {
+        if (u_fogNear) gl.uniform1f(u_fogNear, 2.5);
+        if (u_fogFar)  gl.uniform1f(u_fogFar,  20.0);
+        if (u_fogColor) gl.uniform3f(u_fogColor, FOG_R, FOG_G, FOG_B);
+      }
+      document.body.classList.remove('level-suburbs');
+      document.body.classList.add('level-backrooms-trapped');
+      if (typeof g_ambienceEl !== 'undefined' && g_ambienceEl) {
+        const vol = (typeof clampAudioVolume === 'function') ? clampAudioVolume(VOL_AMBIENCE * g_masterVolume) : Math.max(0, Math.min(1, VOL_AMBIENCE * g_masterVolume));
+        g_ambienceEl.volume = vol;
+      }
+    }
+  }
+}
+
+function getInteractiveAt(x, z) {
+  if (x < 0 || x >= MAP_SIZE || z < 0 || z >= MAP_SIZE) return INTERACT_NONE;
+  return g_InteractiveMap[x] ? g_InteractiveMap[x][z] : INTERACT_NONE;
+}
+
+function removeInteractiveItem(x, z) {
+  const code = getInteractiveAt(x, z);
+  g_InteractiveMap[x][z] = code === INTERACT_WATER_CAN ? INTERACT_CAN_RETURN : INTERACT_NONE;
+  g_LevelItemSlots = g_LevelItemSlots.filter(s => !(s.x === x && s.z === z && (s.type === 'soil_bag' || s.type === 'watering_can')));
+  buildWorldGeometry();
+}
+
+function destroyGardenWeed(x, z) {
+  if (getInteractiveAt(x, z) !== INTERACT_WEED) return false;
+  g_Map[x][z] = 0;
+  g_SuburbFloorTex[x][z] = SUBURB_GRASS_FLOOR_TEX;
+  g_LevelModelSlots = g_LevelModelSlots.filter(s => !(s.kind === 'weeds' && Math.floor(s.x) === x && Math.floor(s.z) === z));
+  g_InteractiveMap[x][z] = INTERACT_GARDEN_PLOT;
+  buildWorldGeometry();
+  return true;
+}
+
+function placeGardenSoil(x, z) {
+  if (getInteractiveAt(x, z) !== INTERACT_GARDEN_PLOT) return false;
+  g_Map[x][z] = 0;
+  g_SuburbFloorTex[x][z] = 'dirt_unwatered.png';
+  buildWorldGeometry();
+  return true;
+}
+
+function waterGardenPlot(x, z) {
+  if (getInteractiveAt(x, z) !== INTERACT_GARDEN_PLOT) return false;
+  g_SuburbFloorTex[x][z] = 'dirt_watered.png';
+  buildWorldGeometry();
+  return true;
+}
+
+function isHedgeTaskCell(x, z) {
+  return x === 8 && z >= 7 && z <= 9;
+}
+
+function breakHedgeBlock(x, z) {
+  if (!isHedgeTaskCell(x, z)) return false;
+  if (x === 8 && z === 8 && g_Map[x][z] > 1) g_Map[x][z] -= 1;
+  else return false;
+  g_SuburbWallTex[x][z] = 'grass.png';
+  g_InteractiveMap[x][z] = INTERACT_GRASS_ROW;
+  buildWorldGeometry();
+  return true;
+}
+
+function placeHedgeBlock(x, z) {
+  if (x !== 8 || (z !== 7 && z !== 9) || g_Map[x][z] >= 1) return false;
+  g_Map[x][z] = 1;
+  g_SuburbWallTex[x][z] = 'grass.png';
+  g_InteractiveMap[x][z] = INTERACT_GRASS_ROW;
+  buildWorldGeometry();
+  return true;
+}
+
+function isHedgeRowComplete() {
+  return g_Map[8][7] === 1 && g_Map[8][8] === 1 && g_Map[8][9] === 1;
+}
+
+function fixGrassRow() {
+  for (let z = 7; z <= 9; z++) {
+    g_Map[8][z] = 1;
+    g_SuburbWallTex[8][z] = 'grass.png';
+    g_InteractiveMap[8][z] = INTERACT_NONE;
+  }
+  buildWorldGeometry();
+  return true;
+}
+
+function returnWateringCan(x, z) {
+  g_InteractiveMap[x][z] = INTERACT_NONE;
+  g_LevelItemSlots.push({ type: 'watering_can', x, z, texName: 'woodendeck.png', height: 0.45, color: [0.45,0.66,0.75,1] });
+  buildWorldGeometry();
+}
+
+function isWorldBlockedCell(x, z) {
+  if (x < 0 || x >= MAP_SIZE || z < 0 || z >= MAP_SIZE) return true;
+  return (g_Map[x][z] > 0) || (g_CollisionMap[x] && g_CollisionMap[x][z] > 0);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // isDoor — true if the map cell is the exit door
 // ─────────────────────────────────────────────────────────────────────────────
 function isDoor(x, z) {
@@ -451,8 +863,154 @@ function isDoor(x, z) {
   return g_MapType[x][z] === DOOR_TYPE;
 }
 
+function _pushCuboid(arr, x0, y0, z0, x1, y1, z1) {
+  function v(x, y, z, u, vv, nx, ny, nz) { arr.push(x, y, z, u, vv, nx, ny, nz); }
+  // +Z
+  v(x0,y0,z1,0,0,0,0,1); v(x1,y0,z1,1,0,0,0,1); v(x1,y1,z1,1,1,0,0,1);
+  v(x0,y0,z1,0,0,0,0,1); v(x1,y1,z1,1,1,0,0,1); v(x0,y1,z1,0,1,0,0,1);
+  // -Z
+  v(x1,y0,z0,0,0,0,0,-1); v(x0,y0,z0,1,0,0,0,-1); v(x0,y1,z0,1,1,0,0,-1);
+  v(x1,y0,z0,0,0,0,0,-1); v(x0,y1,z0,1,1,0,0,-1); v(x1,y1,z0,0,1,0,0,-1);
+  // -X
+  v(x0,y0,z0,0,0,-1,0,0); v(x0,y0,z1,1,0,-1,0,0); v(x0,y1,z1,1,1,-1,0,0);
+  v(x0,y0,z0,0,0,-1,0,0); v(x0,y1,z1,1,1,-1,0,0); v(x0,y1,z0,0,1,-1,0,0);
+  // +X
+  v(x1,y0,z1,0,0,1,0,0); v(x1,y0,z0,1,0,1,0,0); v(x1,y1,z0,1,1,1,0,0);
+  v(x1,y0,z1,0,0,1,0,0); v(x1,y1,z0,1,1,1,0,0); v(x1,y1,z1,0,1,1,0,0);
+  // +Y
+  v(x0,y1,z0,0,0,0,1,0); v(x1,y1,z0,1,0,0,1,0); v(x1,y1,z1,1,1,0,1,0);
+  v(x0,y1,z0,0,0,0,1,0); v(x1,y1,z1,1,1,0,1,0); v(x0,y1,z1,0,1,0,1,0);
+  // -Y
+  v(x0,y0,z1,0,0,0,-1,0); v(x1,y0,z1,1,0,0,-1,0); v(x1,y0,z0,1,1,0,-1,0);
+  v(x0,y0,z1,0,0,0,-1,0); v(x1,y0,z0,1,1,0,-1,0); v(x0,y0,z0,0,1,0,-1,0);
+}
+
+function buildSuburbGeometry() {
+  for (const b of g_suburbBatches) if (b.buffer) gl.deleteBuffer(b.buffer);
+  g_suburbBatches = [];
+  const texVerts = {};
+  function arr(tex) { if (!texVerts[tex]) texVerts[tex] = []; return texVerts[tex]; }
+
+  for (let x = 0; x < MAP_SIZE; x++) {
+    for (let z = 0; z < MAP_SIZE; z++) {
+      pushFace(arr(g_SuburbFloorTex[x][z] || 'grass.png'), x, -1, z, FACE_TOP);
+      const h = g_Map[x][z];
+      if (h <= 0) continue;
+      const tex = g_SuburbWallTex[x][z] || 'housewall.png';
+      const hN = (z + 1 < MAP_SIZE) ? g_Map[x][z + 1] : WALL_H;
+      const hS = (z - 1 >= 0)       ? g_Map[x][z - 1] : WALL_H;
+      const hE = (x + 1 < MAP_SIZE) ? g_Map[x + 1][z] : WALL_H;
+      const hW = (x - 1 >= 0)       ? g_Map[x - 1][z] : WALL_H;
+      for (let y = 0; y < h; y++) {
+        if (hN <= y) pushFace(arr(tex), x, y, z, FACE_FRONT);
+        if (hS <= y) pushFace(arr(tex), x, y, z, FACE_BACK);
+        if (hE <= y) pushFace(arr(tex), x, y, z, FACE_RIGHT);
+        if (hW <= y) pushFace(arr(tex), x, y, z, FACE_LEFT);
+        if (y === h - 1) pushFace(arr(tex), x, y, z, FACE_TOP);
+      }
+    }
+  }
+
+  for (let layer = 0; layer < 3; layer++) {
+    const inset = layer + 1;
+    _pushCuboid(arr('housewall.png'), 6 + inset, 4 + layer, 17 + inset, 26 - inset, 5 + layer, 31 - inset);
+  }
+
+  const doorZ0 = 16.92;
+  const doorZ1 = 17.06;
+  const doorWall = arr('housewall.png');
+  _pushCuboid(doorWall, 14.00, 0.0, doorZ0, 15.00, 4.0, doorZ1);
+  _pushCuboid(doorWall, 17.00, 0.0, doorZ0, 18.00, 4.0, doorZ1);
+  _pushCuboid(doorWall, 15.00, 2.0, doorZ0, 17.00, 4.0, doorZ1);
+  const doorBottom = arr(SUBURB_DOOR_BOTTOM_TEX);
+  const doorTop = arr(SUBURB_DOOR_TOP_TEX);
+  _pushCuboid(doorBottom, 15.00, 0.0, doorZ0, 15.95, 1.0, doorZ1);
+  _pushCuboid(doorTop,    15.00, 1.0, doorZ0, 15.95, 2.0, doorZ1);
+  _pushCuboid(doorBottom, 16.05, 0.0, doorZ0, 17.00, 1.0, doorZ1);
+  _pushCuboid(doorTop,    16.05, 1.0, doorZ0, 17.00, 2.0, doorZ1);
+
+  for (const slot of g_LevelItemSlots) {
+    const tex = slot.texName || 'woodendeck.png';
+    const a = arr(tex);
+    if (slot.type === 'sign') {
+      _pushCuboid(a, slot.x + 0.08, 0.0, slot.z + 0.15, slot.x + 0.22, slot.height, slot.z + 0.85);
+    } else {
+      const s = 0.55;
+      const h = slot.height || 0.55;
+      _pushCuboid(a, slot.x + 0.5 - s/2, 0.0, slot.z + 0.5 - s/2, slot.x + 0.5 + s/2, h, slot.z + 0.5 + s/2);
+    }
+  }
+
+  for (const [texName, verts] of Object.entries(texVerts)) {
+    const data = new Float32Array(verts);
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    g_suburbBatches.push({ texName, buffer: buf, vertCount: data.length / 8 });
+  }
+}
+
+function renderSuburbWorld() {
+  const STRIDE = 32;
+  const identity = new Matrix4();
+  gl.uniformMatrix4fv(u_ModelMatrix, false, identity.elements);
+  gl.uniform1f(u_texColorWeight, 1.0);
+  gl.uniform1i(u_whichTexture, 5);
+  gl.uniform4f(u_baseColor, 1.0, 1.0, 1.0, 1.0);
+
+  for (const batch of g_suburbBatches) {
+    const tex = (typeof g_SuburbTexObjs !== 'undefined') ? g_SuburbTexObjs[batch.texName] : null;
+    if (!tex) continue;
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.bindBuffer(gl.ARRAY_BUFFER, batch.buffer);
+    gl.vertexAttribPointer(a_Position, 3, gl.FLOAT, false, STRIDE,  0);
+    gl.vertexAttribPointer(a_TexCoord, 2, gl.FLOAT, false, STRIDE, 12);
+    gl.vertexAttribPointer(a_Normal,   3, gl.FLOAT, false, STRIDE, 20);
+    gl.enableVertexAttribArray(a_Position);
+    gl.enableVertexAttribArray(a_TexCoord);
+    gl.enableVertexAttribArray(a_Normal);
+    gl.drawArrays(gl.TRIANGLES, 0, batch.vertCount);
+  }
+}
+
+function clearWorldChunks() {
+  if (!gl || !g_worldChunks) return;
+  for (const chunk of g_worldChunks) {
+    for (const buffer of chunk.buffers) if (buffer) gl.deleteBuffer(buffer);
+  }
+  g_worldChunks = [];
+}
+
+function appendBackroomsCellGeometry(groups, x, z) {
+  const h = g_Map[x][z];
+  const type = g_MapType[x][z];
+
+  pushFace(groups[1], x, -1, z, FACE_TOP);
+
+  if (h === 0) {
+    const ceilGrp = (g_CeilType[x][z] === LIGHT_TYPE) ? 2 : 1;
+    pushFace(groups[ceilGrp], x, 4, z, FACE_BOTTOM);
+    return;
+  }
+
+  const grp = (type === DOOR_TYPE) ? 3 : 0;
+  const hN = (z + 1 < MAP_SIZE) ? g_Map[x][z + 1] : WALL_H;
+  const hS = (z - 1 >= 0)       ? g_Map[x][z - 1] : WALL_H;
+  const hE = (x + 1 < MAP_SIZE) ? g_Map[x + 1][z] : WALL_H;
+  const hW = (x - 1 >= 0)       ? g_Map[x - 1][z] : WALL_H;
+
+  for (let y = 0; y < h; y++) {
+    const useGrp = (type === DOOR_TYPE && y >= DOOR_HEIGHT) ? 0 : grp;
+    if (hN <= y) pushFace(groups[useGrp], x, y, z, FACE_FRONT);
+    if (hS <= y) pushFace(groups[useGrp], x, y, z, FACE_BACK);
+    if (hE <= y) pushFace(groups[useGrp], x, y, z, FACE_RIGHT);
+    if (hW <= y) pushFace(groups[useGrp], x, y, z, FACE_LEFT);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// buildWorldGeometry — rebuild the 4 batch buffers from g_Map / g_MapType
+// buildWorldGeometry — rebuild chunked buffers from g_Map / g_MapType
 //
 // group 0 = wall faces       (wall.png, blue-tinted in shader)
 // group 1 = floor + ceiling  (ceiling_floor.png) — non-light ceiling tiles
@@ -460,51 +1018,54 @@ function isDoor(x, z) {
 // group 3 = door faces       (oak door)
 // ─────────────────────────────────────────────────────────────────────────────
 function buildWorldGeometry() {
-  const groups = [[], [], [], []];
-
-  for (let x = 0; x < MAP_SIZE; x++) {
-    for (let z = 0; z < MAP_SIZE; z++) {
-      const h    = g_Map[x][z];
-      const type = g_MapType[x][z];
-
-      // Floor tile under every cell (face sits at y = 0)
-      pushFace(groups[1], x, -1, z, FACE_TOP);
-
-      if (h === 0) {
-        // Open cell → ceiling face at y = 4 (bottom face of ceiling slab).
-        // Light tile cells route to group 2 (emissive); plain cells stay
-        // in group 1.
-        const ceilGrp = (g_CeilType[x][z] === LIGHT_TYPE) ? 2 : 1;
-        pushFace(groups[ceilGrp], x, 4, z, FACE_BOTTOM);
-      } else {
-        // Wall cell → side faces (hidden-face culled)
-        const grp = (type === DOOR_TYPE) ? 3 : 0;
-
-        const hN = (z + 1 < MAP_SIZE) ? g_Map[x][z + 1] : WALL_H;
-        const hS = (z - 1 >= 0)       ? g_Map[x][z - 1] : WALL_H;
-        const hE = (x + 1 < MAP_SIZE) ? g_Map[x + 1][z] : WALL_H;
-        const hW = (x - 1 >= 0)       ? g_Map[x - 1][z] : WALL_H;
-
-        for (let y = 0; y < h; y++) {
-          // Door cells use the door texture only for the lower DOOR_HEIGHT
-          // rows; everything above falls back to the wall texture so the
-          // door visually appears as a short opening in the wall.
-          const useGrp = (type === DOOR_TYPE && y >= DOOR_HEIGHT) ? 0 : grp;
-          if (hN <= y) pushFace(groups[useGrp], x, y, z, FACE_FRONT);
-          if (hS <= y) pushFace(groups[useGrp], x, y, z, FACE_BACK);
-          if (hE <= y) pushFace(groups[useGrp], x, y, z, FACE_RIGHT);
-          if (hW <= y) pushFace(groups[useGrp], x, y, z, FACE_LEFT);
-        }
-      }
-    }
+  clearWorldChunks();
+  if (g_currentLevel === LEVEL_SUBURBS) {
+    buildSuburbGeometry();
+    for (let i = 0; i < 4; i++) g_worldVertCounts[i] = 0;
+    return;
   }
 
-  const STRIDE = 32;
-  for (let i = 0; i < 4; i++) {
-    const data = new Float32Array(groups[i]);
-    g_worldVertCounts[i] = data.length / 8;
-    gl.bindBuffer(gl.ARRAY_BUFFER, g_worldBuffers[i]);
-    gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+  for (let i = 0; i < 4; i++) g_worldVertCounts[i] = 0;
+
+  for (let cx = 0; cx < MAP_SIZE; cx += WORLD_CHUNK_SIZE) {
+    for (let cz = 0; cz < MAP_SIZE; cz += WORLD_CHUNK_SIZE) {
+      const xEnd = Math.min(MAP_SIZE, cx + WORLD_CHUNK_SIZE);
+      const zEnd = Math.min(MAP_SIZE, cz + WORLD_CHUNK_SIZE);
+      const groups = [[], [], [], []];
+      for (let x = cx; x < xEnd; x++) {
+        for (let z = cz; z < zEnd; z++) appendBackroomsCellGeometry(groups, x, z);
+      }
+
+      const buffers = [null, null, null, null];
+      const counts = [0, 0, 0, 0];
+      let total = 0;
+      for (let i = 0; i < 4; i++) {
+        if (groups[i].length === 0) continue;
+        const data = new Float32Array(groups[i]);
+        const buffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+        gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+        buffers[i] = buffer;
+        counts[i] = data.length / 8;
+        g_worldVertCounts[i] += counts[i];
+        total += counts[i];
+      }
+      if (total > 0) {
+        const centerX = (cx + xEnd) * 0.5;
+        const centerZ = (cz + zEnd) * 0.5;
+        g_worldChunks.push({
+          x0: cx,
+          z0: cz,
+          x1: xEnd,
+          z1: zEnd,
+          centerX,
+          centerZ,
+          radius: Math.SQRT2 * WORLD_CHUNK_SIZE * 0.5,
+          buffers,
+          counts,
+        });
+      }
+    }
   }
 }
 
@@ -512,6 +1073,16 @@ function buildWorldGeometry() {
 // renderWorld — 4 drawArrays calls (one per texture group)
 // ─────────────────────────────────────────────────────────────────────────────
 function renderWorld() {
+  if (g_currentLevel === LEVEL_SUBURBS) {
+    renderSuburbWorld();
+    return;
+  }
+
+  if (g_worldChunks && g_worldChunks.length > 0) {
+    renderWorldChunks();
+    return;
+  }
+
   const STRIDE   = 32;
   const identity = new Matrix4();
   gl.uniformMatrix4fv(u_ModelMatrix, false, identity.elements);
@@ -530,6 +1101,51 @@ function renderWorld() {
 
     gl.uniform1i(u_whichTexture, i);
     gl.drawArrays(gl.TRIANGLES, 0, g_worldVertCounts[i]);
+  }
+}
+
+function isWorldChunkVisible(chunk) {
+  if (typeof camera === 'undefined' || !camera) return true;
+  const e = camera.eye.elements;
+  const dx = chunk.centerX - e[0];
+  const dz = chunk.centerZ - e[2];
+  const perfMode = (typeof g_performanceMode !== 'undefined' && g_performanceMode);
+  const maxDist = perfMode ? 14.0 : 31.0;
+  const distLimit = maxDist + chunk.radius;
+  if (dx * dx + dz * dz > distLimit * distLimit) return false;
+
+  const fwd = (typeof camera._flatFwd === 'function') ? camera._flatFwd() : [1, 0, 0];
+  const forward = dx * fwd[0] + dz * fwd[2];
+  if (forward < -chunk.radius - 2.0) return false;
+
+  const side = Math.abs(dx * fwd[2] - dz * fwd[0]);
+  const sideLimit = perfMode
+    ? Math.max(5.0, forward * 0.72 + chunk.radius + 3.0)
+    : Math.max(8.0, forward * 1.05 + chunk.radius + 5.0);
+  return side <= sideLimit;
+}
+
+function renderWorldChunks() {
+  const STRIDE = 32;
+  const identity = new Matrix4();
+  gl.uniformMatrix4fv(u_ModelMatrix, false, identity.elements);
+  gl.uniform1f(u_texColorWeight, 1.0);
+
+  for (const chunk of g_worldChunks) {
+    if (!isWorldChunkVisible(chunk)) continue;
+    for (let i = 0; i < 4; i++) {
+      if (!chunk.counts[i]) continue;
+      gl.bindBuffer(gl.ARRAY_BUFFER, chunk.buffers[i]);
+      gl.vertexAttribPointer(a_Position, 3, gl.FLOAT, false, STRIDE,  0);
+      gl.vertexAttribPointer(a_TexCoord, 2, gl.FLOAT, false, STRIDE, 12);
+      gl.vertexAttribPointer(a_Normal,   3, gl.FLOAT, false, STRIDE, 20);
+      gl.enableVertexAttribArray(a_Position);
+      gl.enableVertexAttribArray(a_TexCoord);
+      gl.enableVertexAttribArray(a_Normal);
+
+      gl.uniform1i(u_whichTexture, i);
+      gl.drawArrays(gl.TRIANGLES, 0, chunk.counts[i]);
+    }
   }
 }
 

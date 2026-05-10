@@ -3,7 +3,8 @@
 // parseOBJ(text) extracts position/UV/normal data from an OBJ string.
 // Returns a Float32Array interleaved as [x,y,z, u,v, nx,ny,nz] per vertex,
 // or null on failure (callers fall back to the cube cluster).
-// Only triangulated meshes are supported (no quads, no materials).
+// Faces are fan-triangulated, so triangles, quads, and simple polygons work.
+// Materials are ignored because this project controls colors/textures in WebGL.
 // ─────────────────────────────────────────────────────────────────────────────
 function parseOBJ(text) {
   try {

@@ -49,6 +49,7 @@ uniform sampler2D u_Sampler1;  // floor+ceiling (ceiling_floor.png)
 uniform sampler2D u_Sampler2;  // ceiling light (light.png — emissive tile)
 uniform sampler2D u_Sampler3;  // door          (oak door)
 uniform sampler2D u_Sampler4;  // goop decals   (goop_arrow.png etc.)
+uniform sampler2D u_Sampler5;  // suburb dynamic textures (road/lawn/house/garden)
 
 // ── Rendering mode ────────────────────────────────────────────────────────
 uniform int   u_whichTexture;    // 0-3: selects sampler
@@ -58,6 +59,7 @@ uniform vec4  u_baseColor;
 // ── Time + flicker control ────────────────────────────────────────────────
 uniform float u_time;
 uniform int   u_flickerEnabled;  // 1 = flicker, 0 = steady (accessibility)
+uniform int   u_isBackrooms;     // 1 = Backrooms fluorescent behavior, 0 = steady suburbs
 // when 1, output is treated as self-lit (used for the tv screen)
 uniform int   u_emissive;
 
@@ -101,6 +103,7 @@ float hash12(vec2 p) {
 // When u_flickerEnabled == 0 we return 'base' flat (still scales lighting,
 // just stops the buzzing/dropouts so photosensitive players are safe).
 float fluorescent(float base, float speed, float phase, float id) {
+  if (u_isBackrooms == 0) return base;
   if (u_flickerEnabled == 0) return base;
   float t       = u_time * speed + phase;
   float hum     = 0.06 * sin(t);                                    // ±6%
@@ -128,6 +131,7 @@ void main() {
   else if (u_whichTexture == 1) texColor = texture2D(u_Sampler1, v_TexCoord);
   else if (u_whichTexture == 2) texColor = texture2D(u_Sampler2, v_TexCoord);
   else if (u_whichTexture == 4) texColor = texture2D(u_Sampler4, v_TexCoord);
+  else if (u_whichTexture == 5) texColor = texture2D(u_Sampler5, v_TexCoord);
   else                          texColor = texture2D(u_Sampler3, v_TexCoord);
 
   // goop tiles: transparent background shows underlying floor/wall through blending
@@ -141,7 +145,7 @@ void main() {
   }
 
   vec3  nrm   = normalize(v_Normal);
-  float light = 0.20;
+  float light = 0.28;
   for (int i = 0; i < MAX_LIGHTS; i++) {
     if (i >= u_numLights) break;
     float fid   = float(i);
@@ -156,7 +160,7 @@ void main() {
   if (u_whichTexture == 2) {
     float tileId  = floor(v_WorldPos.x) * 7.13 + floor(v_WorldPos.z) * 3.71;
     float emissive = 1.05;
-    if (u_flickerEnabled == 1)
+    if (u_isBackrooms == 1 && u_flickerEnabled == 1)
       emissive *= fluorescent(1.0, 8.5 + mod(tileId, 3.0),
                               v_WorldPos.x * 0.7 + v_WorldPos.z * 0.4, tileId);
     lit = mix(lit, texColor.rgb * emissive, 0.85);
@@ -164,13 +168,13 @@ void main() {
 
   if (u_emissive == 1) {
     float ee = 1.0;
-    if (u_flickerEnabled == 1)
+    if (u_isBackrooms == 1 && u_flickerEnabled == 1)
       ee = 0.55 + 0.55 * fluorescent(1.0, 11.0, v_WorldPos.x * 1.3, 21.0);
     lit = albedo * ee;
   }
 
   float fogFactor = clamp((v_Dist - u_fogNear) / (u_fogFar - u_fogNear), 0.0, 1.0);
-  float outAlpha  = (u_whichTexture == 4) ? texColor.a : 1.0;
+  float outAlpha  = (u_texColorWeight < 0.5) ? u_baseColor.a : ((u_whichTexture == 4) ? texColor.a : 1.0);
   gl_FragColor = vec4(mix(lit, u_fogColor, fogFactor), outAlpha);
 }
 `;

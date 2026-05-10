@@ -1,0 +1,790 @@
+ARCHITECTURE EXPLANATION - TWO-ACT WEBGL GAME
+
+Project summary
+---------------
+This project is a vanilla WebGL 1 first-person survival horror game. It uses the
+CSE160 cuon-matrix.js Matrix4/Vector3 classes, my own WebGL rendering code, a
+lightweight OBJ loader, a grid-based level system, and normal browser APIs. It
+does not use Three.js, Babylon.js, glTF runtime loading, or a game engine.
+
+The game has two acts:
+
+1. Act 1 - The Suburbs
+   The player starts on a 32x32 suburban tutorial map outside their house. This
+   level teaches movement and interaction through yard work: remove weeds, pick
+   up soil, place soil, pick up the watering can, water the garden, return the
+   empty can, rearrange the hedge, and then walk into the house.
+
+2. Act 2 - The Backrooms
+   When the player reaches the house, the camera falls through the floor. The
+   engine loads a 96x96 procedural Backrooms maze. The player is trapped near
+   spawn until they read a sign. Closing the sign triggers a scream/dialogue
+   beat, activates the entity, starts the chase, and reveals the survival HUD.
+
+
+Core files
+----------
+- index.html: canvas, HUD, title screen, pause screen, win/lose overlays,
+  sign popup, speedrun timer element, and audio/model credits.
+- style.css: narrative overlay styling, inventory, sign modal, speedrun timer
+  visibility, Backrooms/suburb HUD class rules.
+- main.js: WebGL startup, shaders/uniform setup, textures, input, pointer lock,
+  audio, render loop, goop decals, OBJ prop rendering, performance mode,
+  fullscreen, HUD updates, and win/lose triggers.
+- world.js: active map arrays, suburb map, Backrooms generator, level loading,
+  collision/interaction maps, world geometry batching, chunk culling, lights,
+  door placement, and goop assignment.
+- gameState.js: narrative finite-state machine, tutorial phase progression,
+  dialogue, sign popup flow, inventory rules, movement locks, and entity
+  activation.
+- camera.js: first-person yaw/pitch camera and projection matrix updates.
+- cube.js: cube face constants, one reusable cube buffer, and pushFace() helper
+  for batching cube faces.
+- objLoader.js: lightweight Wavefront OBJ parser.
+- entity.js: entity model upload, animation draw, pathfinding, chase behavior,
+  line-of-sight checks, distance checks, and entity audio updates.
+- animSystem.js: JSON keyframe animation loading/interpolation.
+- anim.json: keyframes/pivots for the entity walk cycle.
+- entity_model.js: pre-baked entity mesh arrays.
+- shaders.js: vertex and fragment shaders for textures, normals, lighting, fog,
+  emissive surfaces, flicker, and goop transparency.
+
+
+Important world data structures
+-------------------------------
+The world is grid-based. The same grid coordinates are used for rendering,
+collision, and interaction.
+
+- g_Map[x][z]
+  Stores visible voxel height. Open floor is 0. A full Backrooms wall is usually
+  height 4. In the suburb, smaller heights are used for hedge blocks and garden
+  objects.
+
+- g_MapType[x][z]
+  Stores the material/type for a grid cell. Door cells use DOOR_TYPE so they can
+  use the oak door texture and trigger the exit interaction.
+
+- g_CeilType[x][z]
+  Stores ceiling type. LIGHT_TYPE marks fluorescent ceiling lights.
+
+- g_CollisionMap[x][z]
+  Stores invisible blockers, such as fence collision, porch gates, and the
+  Backrooms sign blocker.
+
+- g_InteractiveMap[x][z]
+  Stores interaction codes, such as weeds, soil bag, watering can, garden plot,
+  hedge row, and Backrooms sign.
+
+- g_LevelModelSlots
+  Stores runtime OBJ prop instances, such as fence, weeds, and sign. Each slot
+  stores kind, position, yaw, dimensions, color/texture, and other draw data.
+
+- g_FurnitureSlots
+  Stores Backrooms furniture model instances.
+
+- g_worldChunks
+  Stores chunked Backrooms geometry. Each chunk has up to four WebGL buffers,
+  one for each world material group.
+
+
+What a vertex buffer object is
+------------------------------
+A vertex buffer object is a block of GPU memory that stores vertex data.
+
+Without a vertex buffer object, JavaScript would have to send individual vertex
+arrays to the GPU every frame. That is slow. Instead, this engine builds a
+Float32Array once, uploads it with gl.bufferData(), and then draws it with
+gl.drawArrays(). The GPU can then reuse the uploaded data efficiently.
+
+The project uses one interleaved vertex format everywhere:
+
+  x, y, z,  u, v,  nx, ny, nz
+
+That means each vertex has 8 floats:
+
+- x, y, z: position
+- u, v: texture coordinates
+- nx, ny, nz: normal vector for lighting
+
+Each float is 4 bytes, so one vertex is 32 bytes. Attribute pointers use offsets:
+
+- position starts at byte 0
+- texture coordinate starts at byte 12
+- normal starts at byte 20
+- stride is 32 bytes
+
+The same layout is used in world.js, cube.js, entity.js, objLoader.js output,
+furniture meshes, level prop meshes, and the baked entity mesh.
+
+
+Rendering pipeline
+------------------
+1. main.js gets the WebGL context from the canvas.
+2. shaders.js supplies vertex and fragment shader strings.
+3. initShaders() compiles and links the shader program.
+4. main.js stores attribute locations for position, texture coordinates, and
+   normals.
+5. main.js stores uniform locations for model/view/projection matrices, texture
+   samplers, lights, fog, time, emissive mode, and texture/color blending.
+6. Textures are loaded. A procedural fallback canvas is uploaded first so the
+   world can render even if an image fails.
+7. world.js builds static world geometry into GPU buffers.
+8. Every frame, tick() updates time, input, game state, entity AI, audio, HUD,
+   and then calls renderScene().
+9. renderScene() clears the screen, uploads view/projection matrices, and draws
+   sky, world chunks, props, goop decals, exit marker, furniture, and entity.
+
+The shader handles diffuse point lighting, emissive light tiles, fog, animated
+fluorescent flicker, transparent goop decals, and solid-color model fallback.
+
+
+Geometry batching
+-----------------
+The game does not draw one cube at a time. That would create too many draw calls.
+Instead, world geometry is batched into large vertex buffer objects.
+
+cube.js defines six cube faces and a pushFace() helper. world.js calls pushFace()
+only for faces that should actually be visible. For a wall side face, the engine
+checks the neighboring cell. If the neighboring cell is as tall or taller, that
+face is hidden and is not emitted into the vertex array. This is build-time
+hidden-face culling.
+
+Backrooms geometry uses four material groups:
+
+- group 0: wall faces
+- group 1: floor and plain ceiling faces
+- group 2: fluorescent light tile faces
+- group 3: door faces
+
+The older version used four giant buffers for the whole Backrooms map. The
+current version builds 8x8 chunks. Each chunk stores up to four vertex buffer
+objects, one per material group. renderWorldChunks() checks each chunk against
+camera position and direction before drawing it.
+
+The chunk culling is approximate, not perfect wall occlusion. It uses:
+
+- chunk center
+- chunk radius
+- camera position
+- camera flat forward vector
+- distance limit
+- side distance from the view direction
+
+This skips chunks that are too far away, behind the player, or far outside the
+forward view area. It works well with fog because distant geometry would be
+mostly invisible anyway.
+
+Suburb geometry is batched by texture name instead of Backrooms material group.
+buildSuburbGeometry() creates batches for road, sidewalk, grass, house wall,
+wood deck, weed, unwatered dirt, watered dirt, and related suburb textures.
+
+
+Texture loading, filtering, and mipmaps
+---------------------------------------
+main.js loads textures into WebGL texture units. For safety, every texture first
+gets a procedural fallback canvas. When the real image loads, it replaces the
+fallback.
+
+The current texture filtering is:
+
+- Power-of-two textures use LINEAR_MIPMAP_LINEAR for minification.
+- Magnification uses LINEAR.
+- gl.generateMipmap() builds mipmap levels.
+- If anisotropic filtering is available, it is enabled up to 4x.
+- Non-power-of-two textures use LINEAR and CLAMP_TO_EDGE because WebGL 1 cannot
+  safely repeat/mipmap those textures.
+
+This was changed because nearest-neighbor sampling shimmered badly on long
+floors and walls. Mipmaps give the GPU smaller prefiltered texture versions for
+distant surfaces. Bilinear filtering smooths between texels. Anisotropic
+filtering improves texture quality when a surface is viewed at a shallow angle.
+
+
+OBJ loader
+----------
+objLoader.js is a lightweight Wavefront OBJ parser. It is runtime code, not a
+separate build step. It supports the pieces needed by this project:
+
+- v lines for vertex positions
+- vt lines for texture coordinates
+- vn lines for normals
+- f lines for faces
+
+OBJ face indices are 1-based, so parseOBJ() subtracts 1 before indexing into the
+position/UV/normal arrays. It accepts face tokens in common forms:
+
+- v
+- v/vt
+- v/vt/vn
+- v//vn
+
+Faces with more than three vertices are fan-triangulated. For example, a quad is
+converted into two triangles. The return value is a Float32Array using the same
+interleaved layout as the rest of the renderer:
+
+  x, y, z,  u, v,  nx, ny, nz
+
+Materials from .mtl files are ignored. This engine controls model color and
+texture through WebGL uniforms and instance slots.
+
+
+Runtime level model loader
+--------------------------
+main.js contains LEVEL_MODEL_DEFS. It maps model kinds to OBJ files and default
+render settings. Examples:
+
+- fence -> models/fence.obj
+- weeds -> models/weeds.obj
+- sign -> models/sign_merged.obj
+
+loadLevelModelMeshes() fetches each OBJ file, parses it with parseOBJ(),
+computes a bounding box, uploads the vertex data to a vertex buffer object, and
+stores scale/offset metadata. drawLevelModels() then renders each instance from
+g_LevelModelSlots.
+
+Each instance slot can control:
+
+- world x/z position
+- yaw rotation
+- target width/height/length
+- model kind
+- color or texture name
+
+Some OBJ files use a different axis convention. The loader can convert Z-up OBJ
+coordinates into the engine's Y-up world coordinates. Models that are already
+authored correctly can set convertZUp: false. The Backrooms sign uses
+convertZUp: false because its native Y axis already represents height.
+
+Fence collision is separate from the visible fence model. The visible fence is
+an OBJ mesh, while collision uses g_CollisionMap cells. That keeps collision
+simple and grid-aligned even when the rendered model is more detailed.
+
+
+Furniture OBJ loading
+---------------------
+Backrooms furniture uses the same OBJ parser idea. Furniture models such as
+chairs, sofa, TV, and TV screen are fetched, parsed, uploaded into buffers, and
+drawn as instances. This keeps the renderer consistent: runtime OBJ props,
+furniture, cube world geometry, and the entity all eventually become interleaved
+vertex buffer objects.
+
+
+Entity model and animation
+--------------------------
+The entity is handled differently from level props. Its mesh data is pre-baked
+into entity_model.js as JavaScript typed arrays. That avoids parsing larger
+entity OBJ files at startup and makes the demo more reliable.
+
+entity.js uploads one vertex buffer object per body part. The entity is drawn as
+a hierarchy:
+
+- body is the root
+- head is a child of body
+- left arm is a child of body
+- right arm is a child of body
+- left leg is a child of body
+- right leg is a child of body
+
+animSystem.js loads anim.json. Each animation node has a pivot and keyframes.
+For the current time, it finds the two surrounding keyframes, linearly
+interpolates translation/rotation, and creates a Matrix4 transform around the
+pivot:
+
+  translate -> move to pivot -> rotate -> move back from pivot
+
+drawEntity() uses a manual matrix stack. It draws the body with its root matrix,
+then draws child parts using body matrix multiplied by each child animation
+matrix. That satisfies the hierarchical animated character requirement because
+the model is not just one static mesh.
+
+
+Entity AI and chase behavior
+----------------------------
+The entity does not move straight through walls. It uses grid-aware pathfinding.
+
+- Every short interval, entity.js recomputes a breadth-first search from the
+  player's grid cell.
+- The result is a flow field called nextDir.
+- From each reachable cell, nextDir tells the entity which direction leads
+  toward the player.
+- The entity follows that flow field through corridors.
+- A line-of-sight raycast checks whether walls block view of the player.
+- If the player is visible and close enough, the entity enters stronger chase
+  behavior and audio becomes more aggressive.
+
+This is enough for a grid maze and is easier to explain than a full navigation
+mesh. It also means the entity respects the same walls as the player.
+
+
+Level loading
+-------------
+world.js owns the level dispatcher.
+
+- initLevel1Map() builds the 32x32 suburb tutorial map.
+- initLevel2Map() builds the 96x96 procedural Backrooms map.
+- initLevel3Map() falls back to Level 2 so an accidental Level 3 request stays
+  stable.
+- loadLevel(levelID) swaps the active level.
+
+When loadLevel(1) runs:
+
+- MAP_SIZE becomes 32.
+- suburb floor/wall/interaction layers are created.
+- g_CollisionMap gets fence and gate blockers.
+- g_InteractiveMap gets weeds, soil bag, watering can, garden plots, hedge
+  cells, and house transition logic.
+- g_LevelModelSlots gets visible fence/weed/item model instances.
+- camera position and yaw reset to the suburb spawn.
+- fog becomes blue/sky-colored.
+- world geometry is rebuilt.
+
+When loadLevel(2) runs:
+
+- MAP_SIZE becomes 96.
+- initLevel2Map() regenerates the procedural Backrooms.
+- setupBackroomsIntroSign() places the interactive sign near spawn.
+- camera position and yaw reset to the Backrooms spawn.
+- g_timer resets to the round duration.
+- Backrooms fog, CSS classes, ambience volume, light positions, goop decals,
+  chunked world geometry, and furniture are rebuilt.
+- the entity stays inactive until the sign flow finishes.
+
+The engine does not render both worlds at the same time. The active arrays and
+buffers are rebuilt for the current level.
+
+
+Act 1 suburb implementation
+---------------------------
+The suburb level is hand-authored as a 32x32 grid. It includes road, sidewalk,
+lawn, porch, house, garden plots, hedge cells, invisible fence collision, and
+visible OBJ fence/weed/item models.
+
+The tutorial sequence is controlled by gameState.js, not by random booleans.
+The main phases are:
+
+- FADE_IN
+- TUTORIAL_MOVE
+- TUTORIAL_WEEDS
+- TUTORIAL_SOIL_PICKUP
+- TUTORIAL_SOIL_PLACE
+- TUTORIAL_WATER_PICKUP
+- TUTORIAL_WATER_PLACE
+- TUTORIAL_RETURN_CAN
+- TUTORIAL_GRASS_ROW
+- WALK_TO_HOUSE
+- FALLING
+
+The gardening tasks modify actual map data:
+
+- Pulling weeds removes weed cells/model slots.
+- Placing soil changes garden plot cells to unwatered dirt.
+- Watering changes those cells to watered dirt.
+- Returning the can changes inventory and removes the porch block.
+- The hedge task changes grid-cell heights and inventory counts.
+
+The hedge interaction is a controlled block add/delete mechanic. Right mouse
+breaks top hedge blocks into inventory. Left mouse places collected hedge blocks
+onto side cells. Completion checks the final row shape before allowing the
+player to go home.
+
+
+Act 2 Backrooms implementation
+------------------------------
+The Backrooms level is generated procedurally in world.js.
+
+The generator roughly does this:
+
+1. Start with every cell as a wall.
+2. Carve fixed anchor rooms: spawn, exit area, entity spawn, and landmarks.
+3. Add random rooms.
+4. Connect rooms with wide L-shaped corridors.
+5. Add extra loop connections so the map is not just one perfect maze path.
+6. Flood-fill from spawn and remove unreachable open regions.
+7. Add obstructions, pillars, and partitions to break sightlines.
+8. Place the exit door on the east side.
+9. Force a readable one-tile door alcove: open approach tile, wall cells on
+   both sides, door cell in front.
+10. Add light ceiling tiles and choose up to 8 point-light positions.
+11. Build 8x8 chunked vertex buffer objects.
+12. Assign goop floor/wall decals and local exit breadcrumbs.
+
+The exit door is a wall cell marked DOOR_TYPE. It also gets an extra visual
+marker drawn by drawExitDoorMarker(): a full-height oak door panel using a
+combined top+bottom oak door texture and a glowing frame. The local floor arrows
+only appear around the immediate door approach, so the final hint is readable
+without turning the whole maze into arrows.
+
+
+Goop decals and exit guidance
+-----------------------------
+Goop is not baked into the normal wall/floor texture batches. It is drawn as a
+transparent decal pass.
+
+- assignGoopTiles() decides which floor cells and wall faces get decals.
+- buildGoopGeometry() builds separate decal vertex buffers.
+- drawGoopWorld() enables blending and polygon offset so the decals draw over
+  floors/walls without z-fighting.
+- getFloorArrowTexForDelta(dx, dz) chooses the correct arrow texture direction.
+
+Misleading random exit arrows are disabled. The forced breadcrumb arrows are
+localized to the final door approach.
+
+
+Narrative state machine
+-----------------------
+gameState.js owns story progression. The main GAME_PHASE values are:
+
+- FADE_IN
+- TUTORIAL_MOVE
+- TUTORIAL_WEEDS
+- TUTORIAL_SOIL_PICKUP
+- TUTORIAL_SOIL_PLACE
+- TUTORIAL_WATER_PICKUP
+- TUTORIAL_WATER_PLACE
+- TUTORIAL_RETURN_CAN
+- TUTORIAL_GRASS_ROW
+- WALK_TO_HOUSE
+- FALLING
+- BACKROOMS_TRAPPED
+- BACKROOMS_SIGN_OPEN
+- BACKROOMS_CHASE
+
+g_gs stores counters and phase-specific data: weedsLeft, soilUses, waterUses,
+inventoryItem, soilPlaced, waterPlaced, hedgeBlocks, signOpen, vnOpen, and
+dialogue steps.
+
+setPhase() is the central transition function. It updates objectives, tutorial
+toasts, inventory state, CSS body classes, and movement/story locks. Every
+frame, main.js calls updateGameState(dt), which advances timed transitions and
+checks whether the current phase should move forward.
+
+This is cleaner than scattered booleans because the player can only be in one
+major story phase at a time.
+
+
+Complete interaction audit
+--------------------------
+This section lists the player-facing interactions and how they are implemented.
+
+1. Title screen ENTER
+   setupTitleScreen() reads the disable-flicker checkbox and performance-mode
+   checkbox, starts the run, resets speedrun time to 0, starts audio loading
+   from a user gesture, requests pointer lock, and calls startNarrativeSequence().
+
+2. Fullscreen button
+  setupFullscreen() toggles tab fullscreen, not browser-native fullscreen.
+  The body gets a game-fullscreen class, the canvas/container fill the browser
+  viewport, applyCanvasRenderSize() resizes the WebGL backing store,
+  gl.viewport() is updated, and the camera projection matrix is refreshed.
+  This avoids the browser stealing Escape to leave native fullscreen, so Escape
+  can keep working as the game pause key.
+
+3. Performance mode checkbox
+   setPerformanceMode() toggles g_performanceMode. In performance mode, the
+   canvas keeps the same CSS display size but the WebGL backing resolution drops
+  to 40 percent. The canvas uses pixelated upscaling and the FPS label shows
+  the active render size, such as "FPS: 144 | PERF 320x240" on the default
+  800x600 canvas.
+
+4. Flicker checkbox
+   The title and pause checkboxes control g_flickerEnabled. The shader reads
+   u_flickerEnabled. If flicker is disabled, fluorescent lights remain steady.
+
+5. Pause menu
+   ESC or pointer-lock loss calls togglePause(). It releases pointer lock,
+   shows pauseScreen, and pauses timer/entity/audio updates. The pause menu can
+   resume, change master volume, toggle flicker, toggle performance mode, or
+   enter fullscreen.
+
+6. Pointer lock and mouse look
+   The canvas requests pointer lock after the title screen. Mouse movement is
+   accumulated into pending deltas and applied once per frame in processInput(),
+   which reduces jitter from high-polling-rate mice.
+
+7. Dialogue boxes
+   VN dialogue is HTML/CSS over the canvas. Clicking or pressing E/Enter hides
+   the VN box and sets vnJustDismissed so gameState.js can advance story beats.
+
+8. Movement tutorial
+   TUTORIAL_MOVE shows the controls toast. First movement dismisses it and lets
+   the garden sequence begin.
+
+9. Porch blocking before yard work
+   canMoveToNarrative() blocks the player from entering the porch/house early
+   and shows a dialogue reminder to finish the garden first.
+
+10. Pull weeds
+   During TUTORIAL_WEEDS, left click on weed targets removes weed cells/model
+   slots, changes the cell to a garden plot, rebuilds geometry, and decrements
+   weedsLeft.
+
+11. Pick up soil bag
+   Clicking the soil bag removes its model slot, sets inventory to ITEM_SOIL,
+   gives six uses, and advances to TUTORIAL_SOIL_PLACE.
+
+12. Place soil
+   Clicking garden plots with ITEM_SOIL changes their texture/state to unwatered
+   dirt, records the cell in soilPlaced, decrements inventory uses, and rebuilds
+   geometry.
+
+13. Pick up watering can
+   Clicking the watering can removes its model slot, sets inventory to ITEM_CAN,
+   gives six uses, and advances to TUTORIAL_WATER_PLACE.
+
+14. Water soil
+   Clicking placed soil changes its texture to watered dirt, records it in
+   waterPlaced, decrements water uses, and eventually changes inventory to an
+   empty can.
+
+15. Return watering can
+   Clicking the original can-return cell while holding ITEM_CAN_EMPTY puts the
+   can back, clears inventory, and advances to the hedge task.
+
+16. Hedge rearrangement
+   During TUTORIAL_GRASS_ROW, right click breaks top hedge blocks into hedge
+   inventory. Left click places hedge blocks on side cells. The phase completes
+   only when the target hedge row layout is correct.
+
+17. Enter house / falling transition
+   In WALK_TO_HOUSE, crossing the house threshold starts FALLING. The camera
+   drops, pitch tilts, fadeOverlay covers the screen, movement locks, and then
+   loadLevel(2) swaps into the Backrooms.
+
+18. Backrooms trapped intro
+   After loadLevel(2), the player is in BACKROOMS_TRAPPED. Movement is limited
+   near spawn and the objective tells the player to check the sign.
+
+19. Backrooms sign
+   Clicking the sign uses g_InteractiveMap INTERACT_SIGN. openBackroomsSign()
+   shows signPopup, exits pointer lock so the close button is clickable, and
+   enters BACKROOMS_SIGN_OPEN.
+
+20. Close sign / start chase
+   closeBackroomsSign() hides the popup, plays the scream/wail, shows the final
+   internal dialogue lines, relocks pointer, activates the entity, and enters
+   BACKROOMS_CHASE.
+
+21. Entity chase loop
+   During BACKROOMS_CHASE, tick() updates the round timer, updateEntity(),
+   updateEntityAudio(), updateHUD(), and renderScene(). The entity pathfinds,
+   line-of-sight checks run, proximity HUD updates, and audio responds to danger.
+
+22. Round timer wrap
+   If g_timer reaches 0, the round increments, g_timer resets to 120 seconds,
+   g_entitySpeedMult increases by 0.20, and flashRoundBanner() displays
+   "HE IS GETTING FASTER".
+
+23. Exit door click
+   Left mouse calls the interaction targeting code. If the target cell passes
+   isDoor(), triggerWin() stops the run, formats the speedrun time, reveals the
+   final time, and shows the win screen.
+
+24. Lose condition
+   If the entity gets close enough to the player, triggerLose() shows the
+   jumpscare overlay, plays a lose sound, and shows the lose screen.
+
+25. Master volume
+   The pause menu volume slider updates g_masterVolume. It immediately updates
+   long-running Audio elements and affects future Web Audio one-shot sounds.
+
+
+Input and targeting
+-------------------
+Mouse clicks use a target-selection path instead of only using the exact center
+cell. The code combines object hitboxes, grid-cell interaction codes, floor
+targeting, and fallback forward-cell targeting. Then handleNarrativeInteract()
+decides what to do based on current level and GAME_PHASE.
+
+This is why the same left mouse button can pull weeds, pick up the soil bag,
+place soil, water plots, close some overlays, open the Backrooms sign, and click
+the exit door. The target and current phase determine the action.
+
+
+Audio and looping sounds
+------------------------
+The audio system uses both HTML Audio elements and Web Audio because looping
+tracks and short responsive effects have different needs.
+
+- initAudio() creates an AudioContext.
+- initAudioFiles() runs from the title-screen ENTER button so browser autoplay
+  rules are satisfied by a user gesture.
+- Backrooms ambience is an Audio element with loop = true. It starts at zero or
+  low volume depending on level, and loadLevel(2) raises it when entering the
+  Backrooms.
+- The chase track is also an Audio element with loop = true. It stays paused at
+  volume 0 until the entity has line of sight. updateEntityAudio() fades it in
+  and fades it back out instead of hard-starting/stopping it.
+- Player footsteps are decoded Web Audio buffers. Their cadence changes while
+  sprinting.
+- Entity footsteps are decoded Web Audio buffers. Their cadence gets faster in
+  chase behavior and their volume fades by distance.
+- The wail/scream is a Web Audio one-shot with a cooldown so it cannot spam.
+- The lose sound uses a generated oscillator fallback so the jumpscare always
+  has an audio cue even if external audio fails.
+- g_masterVolume multiplies ambience, chase, footsteps, wail, and future
+  one-shots.
+
+The audio is part of gameplay feedback, not just background music. Ambience sells
+the Backrooms setting, footsteps communicate motion/distance, the chase loop
+communicates line-of-sight danger, and the wail punctuates moments when the
+entity sees the player.
+
+
+Speedrun timer
+--------------
+The speedrun timer is separate from the round countdown timer.
+
+- g_speedrunTime resets to 0 when the player presses ENTER on the title screen.
+- tick() increments g_speedrunTime by dt only while the game has started and
+  g_speedrunFinished is false.
+- updateHUD() updates the #speedrunTimer text every frame, but CSS hides it
+  until the run ends.
+- triggerWin() sets g_speedrunFinished = true, formats the time with
+  formatSpeedrunTime(), writes it to #finalRunTime, and reveals the HUD label as
+  "TIME mm:ss.cc".
+- The round timer can reset and make the entity faster, but the speedrun timer
+  keeps counting the whole attempt until victory.
+
+This lets the game keep horror HUD clutter low during play while still giving a
+clear final time for grading or replaying.
+
+
+Performance mode and optimization
+---------------------------------
+Performance mode is available on the title screen and pause menu. It does not
+cap frame rate. Instead, it lowers the WebGL backing resolution to 40 percent of
+the visible canvas size. The CSS size stays the same, but fewer pixels are
+shaded. The canvas uses pixelated upscaling and the FPS text shows the current
+render size so the setting is visually obvious.
+
+Performance mode also changes Backrooms visibility. Normal Backrooms fog is near
+2.5 and far 20.0. Performance-mode Backrooms fog is near 1.5 and far 11.0, so
+less distant geometry is visible. The chunk culling distance and side cone are
+tightened to match the shorter fog, which means renderWorldChunks() skips more
+8x8 chunks before issuing draw calls.
+
+Other performance decisions:
+
+- static world faces are batched into vertex buffer objects
+- hidden wall faces are never emitted into buffers
+- Backrooms geometry is split into 8x8 chunks
+- chunks outside the distance/view range are skipped, with a tighter range in
+  performance mode
+- the entity mesh is pre-baked into entity_model.js
+- smaller props/furniture use runtime OBJ parsing
+- mipmaps reduce texture shimmer and can reduce distant texture sampling cost
+
+This is not portal rendering or perfect occlusion culling. It is hidden-face
+culling plus conservative distance/view chunk culling, which is appropriate for
+this project and much simpler to defend.
+
+
+Fog and lighting
+----------------
+Fog is calculated in the fragment shader from camera distance. The shader mixes
+the lit surface color into u_fogColor between u_fogNear and u_fogFar.
+
+- Suburb fog: near 6.0, far 24.0, color matches the blue sky.
+- Backrooms fog: near 2.5, far 20.0, warm tan color.
+- Backrooms performance fog: near 1.5, far 11.0, same warm tan color, used to
+  hide more distant chunks and make culling more aggressive.
+
+Lights are uploaded from g_LightPositions into a uniform array. The shader uses
+up to 8 active point lights. Fluorescent ceiling light tiles are drawn as
+emissive surfaces. When flicker is enabled, u_time drives a sine/noise/dropout
+function that makes lights unstable. When flicker is disabled, the shader uses a
+steady intensity.
+
+
+Rubric talking points
+---------------------
+- At least 32x32 map: the suburb is 32x32 and the Backrooms is 96x96.
+- Textures: wall, floor/ceiling, lights, door, goop arrows, suburb textures,
+  furniture textures, sign texture, and fallbacks.
+- Camera: camera.js provides perspective yaw/pitch first-person view.
+- Movement: main.js implements WASD, sprint, pointer-lock mouse look, and
+  sliding collision.
+- OBJ loading: objLoader.js parses runtime OBJ props/furniture, and main.js
+  uploads them into vertex buffer objects.
+- Hierarchical character: entity.js + animSystem.js + anim.json +
+  entity_model.js draw a multi-part animated entity with pivots/matrix stack.
+- Lighting: shaders.js implements normals, diffuse point lights, fog, emissive
+  tiles, and flicker.
+- Interaction: gameState.js and main.js implement garden tasks, hedge editing,
+  sign popup, and exit-door win click.
+- FPS counter: main.js updates #fps and also shows performance-mode render size.
+- Story/audio: HTML/CSS overlays, finite-state machine, ambience, chase loop,
+  footsteps, screams, and win/lose screens implement the horror theme.
+
+
+Important defenses if asked
+---------------------------
+What is a vertex buffer object?
+It is GPU memory storing packed vertex data. I build Float32Arrays in JavaScript,
+upload them with gl.bufferData(), and draw them with gl.drawArrays(). That avoids
+resending every triangle every frame.
+
+How does geometry batching work?
+The grid map is converted into visible faces only. Faces are grouped by material
+and uploaded into buffers. In the Backrooms, buffers are also split into 8x8
+chunks so the renderer can skip far/behind-camera chunks.
+
+How does the OBJ loader work?
+parseOBJ() reads v/vt/vn/f lines, converts OBJ's 1-based indices to JavaScript's
+0-based arrays, fan-triangulates polygons, fills missing UV/normal data with
+defaults, and returns the same x,y,z,u,v,nx,ny,nz Float32Array format used by the
+renderer.
+
+How does the level loader work?
+loadLevel() calls the correct map builder, resets camera position/yaw, resets
+timers as needed, rebuilds world buffers, rebuilds goop decals, uploads lights,
+changes fog, toggles CSS classes, and adjusts ambience for the level.
+
+How does the entity chase work?
+It recomputes a breadth-first-search flow field from the player's cell and
+follows nextDir through corridors. It also raycasts for line of sight to trigger
+burst/chase behavior and audio changes.
+
+Why is performance mode implemented as lower resolution instead of an FPS cap?
+The problem was high pixel shading/fill-rate cost, especially on integrated GPUs
+and high-refresh displays. Lowering render resolution reduces shaded pixels while
+keeping input and animation as responsive as the browser can provide.
+
+Why are mipmaps used?
+Mipmaps reduce shimmer and crawling on distant/angled textures by letting the GPU
+sample prefiltered smaller versions of each texture.
+
+What is not implemented?
+The project does not use full portal occlusion culling, skeletal animation,
+physically based rendering, or navmesh pathfinding. It uses simpler systems that
+fit vanilla WebGL 1 and are appropriate for a grid-based assignment game.
+
+
+Validation notes
+----------------
+Recent checks passed after the current implementation changes:
+
+- node --check main.js
+- node --check world.js
+- node --check gameState.js
+- git diff --check on edited files
+- VS Code diagnostics on edited files
+- browser verification that performance mode changes 800x600 rendering to
+  320x240 backing resolution, applies pixelated upscaling, updates the FPS label
+  to include PERF 320x240, and uses closer Backrooms fog for stronger culling.
+
+
+Why this design is explainable
+------------------------------
+The project separates concerns:
+
+- gameState.js decides what should happen in the story.
+- world.js owns what exists in the active level.
+- main.js owns WebGL, input, audio, HUD, and the frame loop.
+- shaders.js owns GPU lighting/fog/texture behavior.
+- objLoader.js turns external OBJ text into the same vertex format used
+  everywhere else.
+- entity.js owns the animated enemy and its pathfinding.
+
+That makes the project defensible: the game is large, but each system has a
+clear job and a clear reason to exist.

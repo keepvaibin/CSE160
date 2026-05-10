@@ -1,0 +1,321 @@
+@font-face {
+  font-family: 'Paintdrips';
+  src: url('fonts/Paintdrips-vZaD.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+}
+/* Narrative UI layer for Act 1 suburbs -> Act 2 Backrooms. */
+#fadeOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 210;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 1.4s ease;
+}
+#fadeOverlay.active { opacity: 1; }
+#fadeText {
+  max-width: 680px;
+  padding: 0 32px;
+  color: #f1e8c7;
+  font: 22px 'Courier New', monospace;
+  letter-spacing: 3px;
+  line-height: 1.6;
+  text-align: center;
+  text-shadow: 0 0 18px rgba(255, 240, 190, 0.35);
+  opacity: 0;
+  transform: translateY(14px);
+  transition: opacity 1s ease, transform 1s ease;
+}
+#fadeOverlay.active #fadeText,
+#fadeText.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+#titleScreen { z-index: 300; }
+
+body.game-fullscreen #container {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  background: #000;
+}
+
+body.game-fullscreen #webgl {
+  width: 100vw;
+  height: 100vh;
+}
+
+#controlsToast {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 75;
+  width: min(320px, calc(100% - 20px));
+  transform: translateY(-8px);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.42s cubic-bezier(.2,.9,.2,1), opacity 0.35s;
+  background: rgba(16, 16, 14, 0.86);
+  border: 1px solid rgba(245, 216, 58, 0.45);
+  box-shadow: 0 12px 32px rgba(0,0,0,0.35), inset 0 0 22px rgba(245,216,58,0.05);
+  color: #f5d83a;
+  font-family: 'Courier New', monospace;
+  padding: 13px 18px;
+  text-align: left;
+}
+#controlsToast.show {
+  transform: translateY(0);
+  opacity: 1;
+}
+#controlsToast .toastTitle {
+  font-size: 11px;
+  letter-spacing: 3px;
+  opacity: .72;
+  margin-bottom: 7px;
+}
+#controlsToast .toastBody {
+  font-size: 12px;
+  letter-spacing: 1.5px;
+  line-height: 1.55;
+  color: #fff1a6;
+}
+#controlsToast kbd {
+  display: inline-block;
+  min-width: 22px;
+  padding: 2px 6px;
+  margin: 0 2px;
+  border: 1px solid rgba(255,255,255,.28);
+  border-bottom-color: rgba(0,0,0,.65);
+  background: rgba(255,255,255,.08);
+  color: #fff8d8;
+  font: 11px 'Courier New', monospace;
+}
+
+#vnBox {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  z-index: 120;
+  width: min(760px, calc(100% - 42px));
+  min-height: 118px;
+  transform: translate(-50%, 140%);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.34s ease, opacity 0.24s ease;
+  background: linear-gradient(180deg, rgba(24,24,20,.96), rgba(5,5,5,.94));
+  border: 2px solid rgba(255, 235, 140, .55);
+  box-shadow: 0 18px 40px rgba(0,0,0,.55), inset 0 0 30px rgba(255,230,120,.05);
+  color: #f7edc8;
+  font-family: 'Courier New', monospace;
+  text-align: left;
+  padding: 20px 24px 24px;
+}
+#vnBox.show {
+  transform: translate(-50%, 0);
+  opacity: 1;
+  pointer-events: auto;
+}
+#vnAuthor {
+  position: absolute;
+  top: -18px;
+  left: 18px;
+  background: #15130b;
+  border: 1px solid rgba(255, 235, 140, .5);
+  color: #f5d83a;
+  padding: 5px 15px;
+  font-size: 12px;
+  letter-spacing: 3px;
+}
+#vnText {
+  font-size: 17px;
+  line-height: 1.55;
+  letter-spacing: 1px;
+}
+#vnContinue {
+  position: absolute;
+  right: 18px;
+  bottom: 8px;
+  color: rgba(245,216,58,.78);
+  font-size: 11px;
+  letter-spacing: 2px;
+  animation: vnPulse .9s ease-in-out infinite alternate;
+}
+@keyframes vnPulse { from { opacity: .35; } to { opacity: 1; } }
+
+#inventorySlot {
+  position: absolute;
+  right: 20px;
+  bottom: 22px;
+  z-index: 82;
+  width: 116px;
+  height: 116px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  pointer-events: none;
+  background: rgba(0,0,0,.68);
+  border: 2px solid rgba(245,216,58,.62);
+  box-shadow: 0 0 22px rgba(245,216,58,.14), inset 0 0 18px rgba(255,255,255,.05);
+  color: #f5d83a;
+  font-family: 'Courier New', monospace;
+}
+#inventorySlot.show { display: flex; }
+#invIcon {
+  width: 44px;
+  height: 44px;
+  margin-bottom: 9px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #8a5a28, #4c2f15);
+  border: 1px solid rgba(255,255,255,.28);
+}
+#inventorySlot.soil #invIcon { background: linear-gradient(135deg, #9b6734, #503018); }
+#inventorySlot.can #invIcon { background: linear-gradient(135deg, #b8ccd2, #406273 48%, #6fb0c8); }
+#inventorySlot.hedge #invIcon { background: linear-gradient(135deg, #4d8f32, #1d4c20 52%, #72ba42); }
+#invItemName {
+  max-width: 100px;
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-align: center;
+  color: #fff0a0;
+}
+#invUseCount {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #f5d83a;
+}
+
+#signPopup {
+  position: absolute;
+  inset: 0;
+  z-index: 1000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  cursor: default;
+  background: rgba(0,0,0,.72);
+}
+#signPopup.show { display: flex; }
+#signWrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(650px, calc(100% - 60px));
+}
+#signCard {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 300px;
+  padding: 30px 38px;
+  background: #e4d9b6;
+  color: #22180c;
+  border: 8px solid #4a2c13;
+  box-shadow: 0 24px 80px rgba(0,0,0,.75), inset 0 0 38px rgba(62,37,14,.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+#signText {
+  font-family: 'Paintdrips', 'Courier New', monospace;
+  width: 100%;
+  font-size: 42px;
+  line-height: 1.22;
+  letter-spacing: 0;
+  color: #240d08;
+  text-shadow: 1px 1px 0 rgba(120,0,0,.2);
+  white-space: pre-line;
+  text-align: center;
+}
+#signCloseBtn {
+  margin-top: 20px;
+  background: #251407;
+  color: #f3e4b6;
+  border: 2px solid #4a2c13;
+  padding: 10px 28px;
+  font: 18px 'Paintdrips', 'Courier New', monospace;
+  letter-spacing: 0;
+  pointer-events: auto;
+  cursor: pointer;
+}
+#signCloseBtn:hover { background: #4a2c13; }
+
+#speedrunTimer {
+  position: absolute;
+  top: 54px;
+  left: 10px;
+  display: none;
+  font-size: 12px;
+  line-height: 1.3;
+  color: rgba(245,216,58,0.92);
+  text-shadow: 0 1px 3px rgba(0,0,0,0.95), 0 0 8px rgba(0,0,0,0.75);
+}
+#speedrunTimer.show { display: block; }
+
+#roundBanner {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  background: rgba(0,0,0,0);
+  color: #f5d83a;
+  font: 34px 'Courier New', monospace;
+  letter-spacing: 0;
+  text-align: center;
+  text-shadow: 0 0 14px rgba(245,216,58,0.85), 0 0 34px rgba(120,0,0,0.75);
+  transition: opacity 0.2s ease, visibility 0s linear 0.2s;
+}
+#roundBanner.show {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.08s ease;
+  animation: roundBannerDarkFlicker 1.8s ease-out forwards;
+}
+
+@keyframes roundBannerDarkFlicker {
+  0%   { background: rgba(0,0,0,0.00); color: rgba(245,216,58,0.00); }
+  8%   { background: rgba(0,0,0,0.72); color: rgba(245,216,58,1.00); }
+  14%  { background: rgba(0,0,0,0.28); color: rgba(245,216,58,0.42); }
+  22%  { background: rgba(0,0,0,0.84); color: rgba(245,216,58,1.00); }
+  34%  { background: rgba(0,0,0,0.52); color: rgba(245,216,58,0.78); }
+  48%  { background: rgba(0,0,0,0.68); color: rgba(245,216,58,1.00); }
+  72%  { background: rgba(0,0,0,0.48); color: rgba(245,216,58,0.72); }
+  100% { background: rgba(0,0,0,0.00); color: rgba(245,216,58,0.00); }
+}
+
+body.level-suburbs #timer,
+body.level-suburbs #objective,
+body.level-suburbs #sanityContainer,
+body.level-suburbs #controls {
+  display: none;
+}
+body.level-backrooms #inventorySlot,
+body.level-backrooms #controlsToast,
+body.level-backrooms #vnBox.suburbsOnly {
+  display: none !important;
+}
+body.level-backrooms #timer,
+body.level-backrooms #objective,
+body.level-backrooms #sanityContainer {
+  display: block;
+}
+body.level-backrooms.level-backrooms-trapped #timer,
+body.level-backrooms.level-backrooms-trapped #objective,
+body.level-backrooms.level-backrooms-trapped #sanityContainer,
+body.level-backrooms.level-backrooms-trapped #controls {
+  display: none;
+}

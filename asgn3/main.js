@@ -23,13 +23,17 @@ var u_time;
 var u_lightPosArr;
 var u_numLights;
 var u_flickerEnabled;
+var u_isBackrooms;
 var u_emissive;             // bool flag for self-lit pieces (tv screen)
 var u_fogNear, u_fogFar, u_fogColor;
-var u_Sampler0, u_Sampler1, u_Sampler2, u_Sampler3;
+var u_Sampler0, u_Sampler1, u_Sampler2, u_Sampler3, u_Sampler5;
 
 // game state
 var camera;
 var g_keys     = {};
+var g_ignoreNextMouseMove = false;
+const MOUSE_DELTA_CAP = 45;
+var g_pendingMouseX = 0, g_pendingMouseY = 0;
 // length of a single round before the entity speeds up and the timer resets.
 // (was 180 = 3 min; using 120 to match the user's "2 minutes" wording.)
 const ROUND_SECONDS  = 120.0;
@@ -38,6 +42,19 @@ var g_round    = 1;            // increments on every timer wrap
 var g_gameOver = false;
 var g_gameWon  = false;
 var g_paused   = false;        // toggled by ESC
+var g_speedrunTime = 0;
+var g_speedrunFinished = false;
+var g_dimTimer = 0;            // seconds left in post-round lights-off effect
+var g_performanceMode = false;
+const PERFORMANCE_RENDER_SCALE = 0.40;
+const BACKROOMS_FOG_NEAR = 2.5;
+const BACKROOMS_FOG_FAR = 20.0;
+const BACKROOMS_PERF_FOG_NEAR = 1.5;
+const BACKROOMS_PERF_FOG_FAR = 11.0;
+var g_anisoExt = null;
+var g_SuburbTexObjs = {};      // dynamic sampler5 textures for Level 1
+var g_LevelModelMeshes = {};   // OBJ meshes for Level 1 models (fence)
+var g_suppressPointerPause = false; // narrative overlays can release pointer lock
 
 // global multiplier on the entity's base speed. resets to 1 each new game,
 // grows by ENTITY_SPEEDUP_PER_ROUND every time the round timer reaches 0.
@@ -95,15 +112,14 @@ const BOB_AMP     = 0.045;    // metres up/down at peak
 const BOB_FREQ    = 8.4;      // rad/sec — steps/sec is BOB_FREQ/(2π)·2 ≈ 2.7
 var  g_baseEyeY   = 1.62;
 
-// Fog/background colour — sickly Backrooms yellow with a faint green bias.
-// Pushing G slightly above R produces the unmistakable "old fluorescent" cast.
-const FOG_R = 0.78, FOG_G = 0.78, FOG_B = 0.36;
+// Fog/background colour — warm tan instead of green-yellow.
+const FOG_R = 0.72, FOG_G = 0.56, FOG_B = 0.34;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Audio mix — tweak these to rebalance everything in one place.
 // All values are 0–1 multiplied by the per-event base level.
 // ─────────────────────────────────────────────────────────────────────────────
-const VOL_AMBIENCE        = 1.2;   // looping room tone
+const VOL_AMBIENCE        = 1.0;   // looping room tone
 const VOL_CHASE_MAX       = 0.45;   // chase loop volume when entity has LOS
 const VOL_WAIL            = 0.32;   // one-shot wail when entity sees player
 const VOL_FOOTSTEP_PLAYER = 0.32;   // small1–4 footsteps under the player
@@ -127,7 +143,7 @@ const ENABLE_chair4 = true;
 // ─────────────────────────────────────────────────────────────────────────────
 const GOOP_FLOOR_CHANCE = 0.008; // ~0.8% of open floor cells get a goop decal
 const GOOP_WALL_CHANCE  = 0.006; // ~0.6% of eligible wall faces get a goop marking
-const GOOP_WRONG_CHANCE = 0.08;  // 8% of wall arrows point the wrong way
+const GOOP_WRONG_CHANCE = 0.0;   // Exit guidance should be readable, not misleading
 
 // ─────────────────────────────────────────────────────────────────────────────
 // main — entry point
@@ -138,6 +154,9 @@ function main() {
 
   gl = canvas.getContext('webgl');
   if (!gl) { console.error('WebGL not supported'); return; }
+  g_anisoExt = gl.getExtension('EXT_texture_filter_anisotropic') ||
+               gl.getExtension('WEBKIT_EXT_texture_filter_anisotropic') ||
+               gl.getExtension('MOZ_EXT_texture_filter_anisotropic');
 
   if (!initShaders(gl, VSHADER_SOURCE, FSHADER_SOURCE)) {
     console.error('Shader compile failed'); return;
@@ -159,6 +178,7 @@ function main() {
   u_lightPosArr      = gl.getUniformLocation(gl.program, 'u_lightPos[0]');
   u_numLights        = gl.getUniformLocation(gl.program, 'u_numLights');
   u_flickerEnabled   = gl.getUniformLocation(gl.program, 'u_flickerEnabled');
+  u_isBackrooms      = gl.getUniformLocation(gl.program, 'u_isBackrooms');
   u_emissive         = gl.getUniformLocation(gl.program, 'u_emissive');
   u_fogNear          = gl.getUniformLocation(gl.program, 'u_fogNear');
   u_fogFar           = gl.getUniformLocation(gl.program, 'u_fogFar');
@@ -168,6 +188,7 @@ function main() {
   u_Sampler2         = gl.getUniformLocation(gl.program, 'u_Sampler2');
   u_Sampler3         = gl.getUniformLocation(gl.program, 'u_Sampler3');
   u_Sampler4         = gl.getUniformLocation(gl.program, 'u_Sampler4');
+  u_Sampler5         = gl.getUniformLocation(gl.program, 'u_Sampler5');
 
   // ── GL state ──────────────────────────────────────────────────────────────
   gl.clearColor(FOG_R, FOG_G, FOG_B, 1.0);
@@ -179,39 +200,34 @@ function main() {
   gl.uniform1i(u_Sampler2, 2);
   gl.uniform1i(u_Sampler3, 3);
   gl.uniform1i(u_Sampler4, 4);
+  gl.uniform1i(u_Sampler5, 5);
 
   // flicker enabled by default. title screen checkbox can flip it.
   gl.uniform1i(u_flickerEnabled, 1);
+  gl.uniform1i(u_isBackrooms, 0);
   gl.uniform1i(u_emissive, 0);
 
   // Loose, deep fog so the player can never see across the 96×96 grid but
   // can comfortably see ~25 units of corridor.  Far must stay below the
   // longest-possible open run (capped to 14 by world.js obstruction pass
   // → plenty of breathing room with far=28).
-  gl.uniform1f(u_fogNear,  4.0);
-  gl.uniform1f(u_fogFar,  28.0);
+  gl.uniform1f(u_fogNear,  2.5);
+  gl.uniform1f(u_fogFar,  20.0);
   gl.uniform3f(u_fogColor, FOG_R, FOG_G, FOG_B);
 
   // ── Textures — user-supplied PNGs (with procedural fallbacks) ─────────
   loadTexture(gl.TEXTURE0, 'textures/wall.png',          'wall');
   loadTexture(gl.TEXTURE1, 'textures/ceiling_floor.png', 'ceiling_floor');
   loadTexture(gl.TEXTURE2, 'textures/light.png',         'light');
-  loadTexture(gl.TEXTURE3, 'textures/Oak_Door_(bottom_texture)_JE4_BE2.png', 'door');
+  loadBackroomsDoorTexture(gl.TEXTURE3);
   loadGoopTextures();
+  loadSuburbTextures();
 
   // ── World ─────────────────────────────────────────────────────────────────
   camera = new Camera(canvas);
   initWorldBuffers();
-  initMap();
-  buildWorldGeometry();
   initSingleCubeBuffer();
-
-  // goop tile decals — assign cells/faces after map is ready, then build VBOs
-  assignGoopTiles();
-  buildGoopGeometry();
-
-  // push the world's chosen light positions into the glsl array uniform.
-  uploadLightPositions();
+  loadLevel(1);
 
   // entity model + animation
   initEntityModel();
@@ -219,10 +235,13 @@ function main() {
 
   // furniture (chairs, sofa, tv). loaded async; renders show up once ready.
   loadFurnitureMeshes();
+  loadLevelModelMeshes();
 
   // input + audio
   setupInput();
-  initAudio();  setupTitleScreen();
+  initAudio();
+  if (typeof setupGameStateUI === 'function') setupGameStateUI();
+  setupTitleScreen();
   setupFullscreen();
   setupPauseMenu();
   requestAnimationFrame(tick);
@@ -241,7 +260,11 @@ function tick(timestamp) {
   // anything time-driven (timer, entity ai, audio cues).
   if (!g_paused) {
     g_seconds += dt;
-    if (g_started) {
+    if (g_started && !g_speedrunFinished) g_speedrunTime += dt;
+    if (g_dimTimer > 0) g_dimTimer = Math.max(0, g_dimTimer - dt);
+    if (typeof updateGameState === 'function') updateGameState(dt);
+    const chaseActive = (typeof isBackroomsChaseActive === 'function') ? isBackroomsChaseActive() : g_started;
+    if (g_started && chaseActive) {
       g_timer -= dt;
       // round end: reset timer, bump entity speed, do not end game.
       if (g_timer <= 0) {
@@ -258,7 +281,8 @@ function tick(timestamp) {
 
   if (!g_paused) {
     processInput(dt);
-    if (g_started) {
+    const chaseActive = (typeof isBackroomsChaseActive === 'function') ? isBackroomsChaseActive() : g_started;
+    if (g_started && chaseActive && g_entityActive) {
       updateEntity(dt);
       updateEntityAudio(dt);
       if (getEntityDist() < 1.5) { triggerLose(); return; }
@@ -278,10 +302,34 @@ function renderScene() {
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   gl.uniformMatrix4fv(u_ViewMatrix,       false, camera.viewMatrix.elements);
   gl.uniformMatrix4fv(u_ProjectionMatrix, false, camera.projectionMatrix.elements);
+  // Brief lights-off during the round-transition banner ("HE WATCHES YOU")
+  gl.uniform1i(u_numLights, g_dimTimer > 0 ? 0 : Math.min(g_LightPositions.length, 8));
+  if (g_currentLevel === LEVEL_SUBURBS) drawSkybox();
   renderWorld();
+  drawLevelModels();
+  drawGardenHighlight();
+  drawLevelItems();
   drawGoopWorld();
+  drawExitDoorMarker();
   drawFurniture();
-  drawEntity(g_seconds);
+  if (g_entityActive) drawEntity(g_seconds);
+}
+
+function drawSkybox() {
+  if (!g_singleCubeBuffer) return;
+  const e = camera.eye.elements;
+  const m = new Matrix4();
+  m.translate(e[0], e[1], e[2]);
+  m.scale(220, 220, 220);
+  gl.depthMask(false);
+  gl.uniformMatrix4fv(u_ModelMatrix, false, m.elements);
+  gl.uniform1f(u_texColorWeight, 0.0);
+  gl.uniform4fv(u_baseColor, g_skyColor || [0.53, 0.81, 0.98, 1.0]);
+  gl.uniform1i(u_emissive, 1);
+  bindSingleCubeBuffer();
+  gl.drawArrays(gl.TRIANGLES, 0, 36);
+  gl.uniform1i(u_emissive, 0);
+  gl.depthMask(true);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -313,6 +361,15 @@ function triggerLose() {
 function triggerWin() {
   if (g_gameOver || g_gameWon) return;
   g_gameWon = true;
+  g_speedrunFinished = true;
+  const finalTime = formatSpeedrunTime(g_speedrunTime);
+  const finalEl = document.getElementById('finalRunTime');
+  if (finalEl) finalEl.textContent = 'Your time was ' + finalTime + '.';
+  const speedrunEl = document.getElementById('speedrunTimer');
+  if (speedrunEl) {
+    speedrunEl.textContent = 'TIME ' + finalTime;
+    speedrunEl.classList.add('show');
+  }
   document.getElementById('winScreen').classList.add('active');
 }
 
@@ -322,6 +379,11 @@ function togglePause() {
   g_paused = !g_paused;
   const ps = document.getElementById('pauseScreen');
   if (ps) ps.classList.toggle('active', g_paused);
+  if (g_paused) {
+    syncPerformanceCheckboxes();
+    const flickerCb = document.getElementById('pauseFlickerCb');
+    if (flickerCb) flickerCb.checked = !g_flickerEnabled;
+  }
   if (g_paused && document.pointerLockElement) {
     document.exitPointerLock();
   }
@@ -335,8 +397,9 @@ function flashRoundBanner() {
     console.log('[round] reset, entity speed mult =', g_entitySpeedMult.toFixed(2));
     return;
   }
-  el.textContent = 'THE WALLS SHIFT \u2014 IT MOVES FASTER';
+  el.textContent = 'HE IS GETTING FASTER';
   el.classList.add('show');
+  g_dimTimer = 1.25;
   clearTimeout(flashRoundBanner._t);
   flashRoundBanner._t = setTimeout(() => el.classList.remove('show'), 1800);
 }
@@ -401,6 +464,20 @@ const GOOP_FLOOR_TEXTURES = [
 ];
 const GOOP_WALL_LEFT_TEXTURES  = ['goop_wall_left_1.png',  'goop_wall_left_2.png',  'goop_wall_left_3.png'];
 const GOOP_WALL_RIGHT_TEXTURES = ['goop_wall_right_1.png', 'goop_wall_right_2.png', 'goop_wall_right_3.png'];
+// Non-directional wall decorations (brushes, crosses, splatters).
+const GOOP_WALL_DECOR_TEXTURES = [
+  'goop_wall_brush_1.png',    'goop_wall_brush_2.png',    'goop_wall_brush_3.png',
+  'goop_wall_cross_1.png',    'goop_wall_cross_2.png',    'goop_wall_cross_3.png',    'goop_wall_cross_4.png',
+  'goop_wall_splatter_1.png', 'goop_wall_splatter_2.png', 'goop_wall_splatter_3.png',
+  'goop_wall_splatter_4.png', 'goop_wall_splatter_5.png',
+];
+// Non-arrow floor decals — used for the ~45 % of floor goop that isn’t an arrow.
+const GOOP_FLOOR_DECORS = [
+  'goop_cross_1.png', 'goop_cross_2.png', 'goop_cross_3.png',
+  'goop_splatter.png', 'goop_splatter_1.png', 'goop_splatter_2.png',
+  'goop_splatter_3.png', 'goop_splatter_4.png', 'goop_splatter_5.png',
+  'goop_splatter_6.png', 'goop_stroke.png', 'goop_x.png',
+];
 
 function loadFurnitureMeshes() {
   for (const kind of Object.keys(FURNITURE_DEFS)) {
@@ -483,6 +560,205 @@ function drawFurniture() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Level model system — currently used for the custom fence OBJ in the suburb.
+// The OBJ is converted from its original Z-up coordinate system into the
+// engine's Y-up convention, then drawn as batched VBO instances.
+// ─────────────────────────────────────────────────────────────────────────────
+const LEVEL_MODEL_DEFS = {
+  fence: { file: 'models/fence.obj', color: [0.62, 0.40, 0.22, 1.0] },
+  weeds: { file: 'models/weeds.obj', color: [0.28, 0.70, 0.22, 1.0], convertZUp: false },
+  sign:  { file: 'models/sign_merged.obj', texName: 'Sofa1_diff.png', color: [1.0, 1.0, 1.0, 1.0], convertZUp: false },
+};
+
+function _convertObjZUpToYUp(verts) {
+  const out = new Float32Array(verts.length);
+  for (let i = 0; i < verts.length; i += 8) {
+    const x = verts[i], y = verts[i+1], z = verts[i+2];
+    const nx = verts[i+5], ny = verts[i+6], nz = verts[i+7];
+    out[i]   = x;
+    out[i+1] = z;
+    out[i+2] = -y;
+    out[i+3] = verts[i+3];
+    out[i+4] = verts[i+4];
+    out[i+5] = nx;
+    out[i+6] = nz;
+    out[i+7] = -ny;
+  }
+  return out;
+}
+
+function loadLevelModelMeshes() {
+  for (const kind of Object.keys(LEVEL_MODEL_DEFS)) {
+    const def = LEVEL_MODEL_DEFS[kind];
+    fetch(def.file)
+      .then(r => r.ok ? r.text() : Promise.reject(r.status))
+      .then(txt => {
+        const parsed = parseOBJ(txt);
+        if (!parsed) { console.warn('[level-model] parse failed:', kind); return; }
+        const verts = def.convertZUp === false ? parsed : _convertObjZUpToYUp(parsed);
+        let minX = Infinity, minY = Infinity, minZ = Infinity;
+        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+        for (let i = 0; i < verts.length; i += 8) {
+          const x = verts[i], y = verts[i+1], z = verts[i+2];
+          if (x < minX) minX = x; if (x > maxX) maxX = x;
+          if (y < minY) minY = y; if (y > maxY) maxY = y;
+          if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+        }
+        const buf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+        gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+        g_LevelModelMeshes[kind] = {
+          buffer: buf,
+          vertCount: verts.length / 8,
+          width: Math.max(0.001, maxX - minX),
+          height: Math.max(0.001, maxY - minY),
+          length: Math.max(0.001, maxZ - minZ),
+          offsetX: -(minX + maxX) * 0.5,
+          offsetY: -minY,
+          offsetZ: -(minZ + maxZ) * 0.5,
+        };
+        console.log('[level-model] loaded', kind, 'verts=', verts.length / 8);
+      })
+      .catch(err => console.warn('[level-model] fetch failed:', kind, err));
+  }
+}
+
+function drawLevelModels() {
+  if (!g_LevelModelSlots || g_LevelModelSlots.length === 0) return;
+  const stride = 32;
+  for (const slot of g_LevelModelSlots) {
+    const mesh = g_LevelModelMeshes[slot.kind];
+    if (!mesh) continue;
+    const sx = (slot.width || 0.18) / mesh.width;
+    const sy = (slot.height || 1.4) / mesh.height;
+    const sz = (slot.length || 8.0) / mesh.length;
+    const m = new Matrix4();
+    m.translate(slot.x, 0.0, slot.z);
+    m.rotate(slot.yaw || 0, 0, 1, 0);
+    m.scale(sx, sy, sz);
+    m.translate(mesh.offsetX, mesh.offsetY, mesh.offsetZ);
+
+    gl.uniformMatrix4fv(u_ModelMatrix, false, m.elements);
+    gl.uniform1i(u_emissive, 0);
+    const _def = LEVEL_MODEL_DEFS[slot.kind];
+    const _texName = slot.texName || _def.texName;
+    const _tex = _texName ? g_SuburbTexObjs[_texName] : null;
+    if (_tex) {
+      gl.activeTexture(gl.TEXTURE5);
+      gl.bindTexture(gl.TEXTURE_2D, _tex);
+      gl.uniform1i(u_whichTexture, 5);
+      gl.uniform1f(u_texColorWeight, 1.0);
+      gl.uniform4f(u_baseColor, 1.0, 1.0, 1.0, 1.0);
+    } else {
+      gl.uniform1f(u_texColorWeight, 0.0);
+      gl.uniform4fv(u_baseColor, slot.color || _def.color || [0.8, 0.7, 0.5, 1.0]);
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, mesh.buffer);
+    gl.vertexAttribPointer(a_Position, 3, gl.FLOAT, false, stride,  0);
+    gl.enableVertexAttribArray(a_Position);
+    gl.vertexAttribPointer(a_TexCoord, 2, gl.FLOAT, false, stride, 12);
+    gl.enableVertexAttribArray(a_TexCoord);
+    gl.vertexAttribPointer(a_Normal,   3, gl.FLOAT, false, stride, 20);
+    gl.enableVertexAttribArray(a_Normal);
+    gl.drawArrays(gl.TRIANGLES, 0, mesh.vertCount);
+  }
+}
+
+function drawGardenHighlight() {
+  if (g_currentLevel !== LEVEL_SUBURBS || !g_singleCubeBuffer) return;
+  if (typeof g_InteractiveMap === 'undefined' || !g_InteractiveMap.length) return;
+
+  let active = false;
+  let minX = 22, maxX = 24, minZ = 7, maxZ = 8;
+  if (typeof g_gs !== 'undefined' && g_gs.phase === GAME_PHASE.TUTORIAL_GRASS_ROW) {
+    active = true;
+    minX = 8; maxX = 8; minZ = 7; maxZ = 9;
+  } else {
+    for (let x = 22; x <= 24 && !active; x++) {
+      for (let z = 7; z <= 8; z++) {
+        const code = g_InteractiveMap[x] ? g_InteractiveMap[x][z] : INTERACT_NONE;
+        if (code === INTERACT_WEED || code === INTERACT_GARDEN_PLOT) {
+          active = true;
+          break;
+        }
+      }
+    }
+  }
+  if (!active) return;
+
+  bindSingleCubeBuffer();
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.depthMask(false);
+  gl.uniform1f(u_texColorWeight, 0.0);
+  gl.uniform1i(u_whichTexture, 5);
+  gl.uniform4f(u_baseColor, 0.35, 1.0, 0.38, 0.55);
+  gl.uniform1i(u_emissive, 0);
+
+  const cx = (minX + maxX + 1) * 0.5;
+  const cz = (minZ + maxZ + 1) * 0.5;
+  const width = (maxX - minX + 1) + 0.04;
+  const length = (maxZ - minZ + 1) + 0.04;
+  const strips = [
+    { x: cx, y: 0.035, z: minZ + 0.02, sx: width, sy: 0.035, sz: 0.055 },
+    { x: cx, y: 0.035, z: maxZ + 0.98, sx: width, sy: 0.035, sz: 0.055 },
+    { x: minX + 0.02, y: 0.035, z: cz, sx: 0.055, sy: 0.035, sz: length },
+    { x: maxX + 0.98, y: 0.035, z: cz, sx: 0.055, sy: 0.035, sz: length },
+  ];
+  for (const strip of strips) {
+    const m = new Matrix4();
+    m.translate(strip.x, strip.y, strip.z);
+    m.scale(strip.sx, strip.sy, strip.sz);
+    gl.uniformMatrix4fv(u_ModelMatrix, false, m.elements);
+    gl.drawArrays(gl.TRIANGLES, 0, 36);
+  }
+
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+  gl.uniform1f(u_texColorWeight, 1.0);
+  gl.uniform4f(u_baseColor, 1.0, 1.0, 1.0, 1.0);
+}
+
+function drawLevelItems() {
+  if (g_currentLevel === LEVEL_SUBURBS) return;
+  if (!g_LevelItemSlots || g_LevelItemSlots.length === 0 || !g_singleCubeBuffer) return;
+
+  bindSingleCubeBuffer();
+  gl.uniform1i(u_whichTexture, 5);
+  gl.uniform1f(u_texColorWeight, 1.0);
+  gl.uniform4f(u_baseColor, 1.0, 1.0, 1.0, 1.0);
+  gl.uniform1i(u_emissive, 0);
+
+  for (const slot of g_LevelItemSlots) {
+    const tex = g_SuburbTexObjs[slot.texName || 'woodendeck.png'];
+    if (tex) {
+      gl.activeTexture(gl.TEXTURE5);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+    } else {
+      gl.uniform1f(u_texColorWeight, 0.0);
+      gl.uniform4fv(u_baseColor, slot.color || [0.72, 0.58, 0.35, 1.0]);
+    }
+
+    const h = slot.height || 1.0;
+    const m = new Matrix4();
+    if (slot.type === 'sign') {
+      m.translate(slot.x + 0.15, h * 0.5, slot.z + 0.5);
+      m.scale(0.14, h, 0.70);
+    } else {
+      m.translate(slot.x + 0.5, h * 0.5, slot.z + 0.5);
+      m.scale(0.55, h, 0.55);
+    }
+    gl.uniformMatrix4fv(u_ModelMatrix, false, m.elements);
+    gl.drawArrays(gl.TRIANGLES, 0, 36);
+
+    if (!tex) {
+      gl.uniform1f(u_texColorWeight, 1.0);
+      gl.uniform4f(u_baseColor, 1.0, 1.0, 1.0, 1.0);
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // goop tile decals — goop textures placed on floor and wall tiles,
 // rendered with the same lighting/fog as normal geometry.
 // Transparent PNG areas let the underlying floor/wall show through.
@@ -497,6 +773,52 @@ const GOOP_WALL_NEIGHBORS = [
   { dcx: +1, dcz:  0, wallFace: FACE_LEFT  },  // wall to +X, its -X face shows
 ];
 
+// ─────────────────────────────────────────────────────────────────────────────
+// getFloorArrowTex — pick the floor arrow texture that points from (fx, fz)
+// toward the exit door.  Floor UV mapping: U = +X, V = +Z (after FLIP_Y),
+// so image-up = world +Z (south) and image-right = world +X (east).
+// ─────────────────────────────────────────────────────────────────────────────
+function getFloorArrowTex(fx, fz, wrong) {
+  let dx = DOOR_CELL_X + 0.5 - fx;
+  let dz = DOOR_CELL_Z + 0.5 - fz;
+  if (wrong) { dx = -dx; dz = -dz; }          // wrong: point away from door
+  return getFloorArrowTexForDelta(dx, dz);
+}
+
+function getFloorArrowTexForDelta(dx, dz) {
+  const angle  = Math.atan2(dz, dx);           // 0=E, π/2=S, ±π=W, -π/2=N
+  const sector = Math.round(angle / (Math.PI / 4));
+  const dirs   = ['e','se','s','sw','w','nw','n','ne'];
+  const dir    = dirs[((sector % 8) + 8) % 8];
+  const tmap   = {
+    e:  'goop_arrow_right.png',       // → +X
+    se: 'goop_arrow_right_up.png',    // → +X, +Z
+    s:  'goop_arrow_up.png',          // → +Z
+    sw: 'goop_arrow_left_up.png',     // → −X, +Z
+    w:  'goop_arrow_left.png',        // → −X
+    nw: 'goop_arrow_left_down.png',   // → −X, −Z
+    n:  'goop_arrow_down.png',        // → −Z
+    ne: 'goop_arrow_right_down.png',  // → +X, −Z
+  };
+  return tmap[dir];
+}
+
+function addExitBreadcrumbs() {
+  const tx = DOOR_CELL_X - 1;
+  const tz = DOOR_CELL_Z;
+  if (!g_Map || !g_Map.length || !g_Map[tx] || g_Map[tx][tz] !== 0) return;
+
+  for (let x = tx - 1; x <= tx + 1; x++) {
+    for (let z = tz - 1; z <= tz + 1; z++) {
+      if (!g_Map[x] || g_Map[x][z] !== 0) continue;
+      const texName = (x === tx && z === tz)
+        ? 'goop_arrow_right.png'
+        : getFloorArrowTexForDelta(tx - x, tz - z);
+      g_goopFloorCells.set(x + ',' + z, texName);
+    }
+  }
+}
+
 function assignGoopTiles() {
   g_goopFloorCells.clear();
   g_goopWallFaces.clear();
@@ -505,17 +827,19 @@ function assignGoopTiles() {
   let seed = 0xF00DCAFE;
   function rng() { seed = (seed * 1664525 + 1013904223) >>> 0; return (seed >>> 8) / 16777215; }
 
-  const doorX = DOOR_CELL_X + 0.5;
-  const doorZ = DOOR_CELL_Z + 0.5;
-
   for (let x = 0; x < MAP_SIZE; x++) {
     for (let z = 0; z < MAP_SIZE; z++) {
       if (g_Map[x][z] !== 0) continue;
 
-      // floor goop
+      // floor goop — 55% directional arrow pointing toward exit, 45% decorative
       if (rng() < GOOP_FLOOR_CHANCE) {
-        const idx = Math.floor(rng() * GOOP_FLOOR_TEXTURES.length);
-        g_goopFloorCells.set(x + ',' + z, GOOP_FLOOR_TEXTURES[idx]);
+        let texName;
+        if (rng() < 0.55) {
+          texName = getFloorArrowTex(x + 0.5, z + 0.5, rng() < GOOP_WRONG_CHANCE);
+        } else {
+          texName = GOOP_FLOOR_DECORS[Math.floor(rng() * GOOP_FLOOR_DECORS.length)];
+        }
+        g_goopFloorCells.set(x + ',' + z, texName);
       }
 
       // wall face goop
@@ -525,16 +849,25 @@ function assignGoopTiles() {
         if (g_Map[wx][wz] === 0) continue;
         if (rng() > GOOP_WALL_CHANCE) continue;
 
-        const tangX = (nb.dcz !== 0) ? 1 : 0;
-        const tangZ = (nb.dcx !== 0) ? 1 : 0;
-        const dot   = (doorX - (x + 0.5)) * tangX + (doorZ - (z + 0.5)) * tangZ;
-        const wrong = rng() < GOOP_WRONG_CHANCE;
-        const pool  = (dot >= 0) !== wrong ? GOOP_WALL_RIGHT_TEXTURES : GOOP_WALL_LEFT_TEXTURES;
-        const tex   = pool[Math.floor(rng() * pool.length)];
+        let tex;
+        if (rng() < 0.45) {
+          // Non-directional decoration (brush stroke, cross, splatter)
+          tex = GOOP_WALL_DECOR_TEXTURES[Math.floor(rng() * GOOP_WALL_DECOR_TEXTURES.length)];
+        } else {
+          // Directional arrow: left or right based on tangent toward exit
+          const tangX = (nb.dcz !== 0) ? 1 : 0;
+          const tangZ = (nb.dcx !== 0) ? 1 : 0;
+          const dot   = (DOOR_CELL_X + 0.5 - (x + 0.5)) * tangX
+                      + (DOOR_CELL_Z + 0.5 - (z + 0.5)) * tangZ;
+          const wrong = rng() < GOOP_WRONG_CHANCE;
+          const pool  = (dot >= 0) !== wrong ? GOOP_WALL_RIGHT_TEXTURES : GOOP_WALL_LEFT_TEXTURES;
+          tex = pool[Math.floor(rng() * pool.length)];
+        }
         g_goopWallFaces.set(wx + ',' + wz + ',' + nb.wallFace + ',1', tex);
       }
     }
   }
+  addExitBreadcrumbs();
 }
 
 function buildGoopGeometry() {
@@ -604,6 +937,53 @@ function drawGoopWorld() {
   gl.uniform1i(u_whichTexture, 0);
 }
 
+function drawExitDoorMarker() {
+  if (g_currentLevel !== LEVEL_BACKROOMS || !g_singleCubeBuffer) return;
+  if (typeof DOOR_CELL_X === 'undefined' || DOOR_CELL_X < 0) return;
+
+  bindSingleCubeBuffer();
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.depthMask(false);
+
+  const doorX = DOOR_CELL_X - 0.035;
+  const doorZ = DOOR_CELL_Z + 0.5;
+
+  gl.uniform1i(u_whichTexture, 3);
+  gl.uniform1f(u_texColorWeight, 1.0);
+  gl.uniform4f(u_baseColor, 1.0, 1.0, 1.0, 1.0);
+  gl.uniform1i(u_emissive, 0);
+  const doorPanel = new Matrix4();
+  doorPanel.translate(doorX, 1.08, doorZ);
+  doorPanel.scale(0.06, 2.16, 1.08);
+  gl.uniformMatrix4fv(u_ModelMatrix, false, doorPanel.elements);
+  gl.drawArrays(gl.TRIANGLES, 0, 36);
+
+  gl.uniform1f(u_texColorWeight, 0.0);
+  gl.uniform1i(u_whichTexture, 5);
+  gl.uniform1i(u_emissive, 1);
+  gl.uniform4f(u_baseColor, 1.0, 0.82, 0.16, 0.92);
+  const framePieces = [
+    { y: 1.10, z: doorZ - 0.62, sy: 2.26, sz: 0.09 },
+    { y: 1.10, z: doorZ + 0.62, sy: 2.26, sz: 0.09 },
+    { y: 2.25, z: doorZ,        sy: 0.11, sz: 1.34 },
+    { y: 0.03, z: doorZ,        sy: 0.06, sz: 1.34 },
+  ];
+  for (const piece of framePieces) {
+    const m = new Matrix4();
+    m.translate(doorX - 0.045, piece.y, piece.z);
+    m.scale(0.07, piece.sy, piece.sz);
+    gl.uniformMatrix4fv(u_ModelMatrix, false, m.elements);
+    gl.drawArrays(gl.TRIANGLES, 0, 36);
+  }
+
+  gl.uniform1i(u_emissive, 0);
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+  gl.uniform1f(u_texColorWeight, 1.0);
+  gl.uniform4f(u_baseColor, 1.0, 1.0, 1.0, 1.0);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // initAudio — just sets up an AudioContext for the file-based one-shots.
 // All previously-synthesised hum / proximity sawtooth has been removed; the
@@ -617,6 +997,10 @@ function initAudio() {
 
 function updateProximityAudio(_dist) { /* no-op — retained for HUD callsite */ }
 
+function clampAudioVolume(value) {
+  return Math.max(0, Math.min(1, value || 0));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // initAudioFiles — load ambience + footstep WAVs once user gesture
 // has unlocked AudioContext. Called from the title-screen ENTER button.
@@ -626,7 +1010,7 @@ function initAudioFiles() {
   try {
     g_ambienceEl = new Audio('audio/626096__resaural__backrooms-ambience.wav');
     g_ambienceEl.loop   = true;
-    g_ambienceEl.volume = VOL_AMBIENCE * g_masterVolume;
+    g_ambienceEl.volume = (g_currentLevel === LEVEL_BACKROOMS) ? clampAudioVolume(VOL_AMBIENCE * g_masterVolume) : 0.0;
     const p = g_ambienceEl.play();
     if (p && p.catch) p.catch(err => console.log('ambience play blocked:', err.message));
   } catch (e) { console.log('ambience unavailable:', e.message); }
@@ -720,7 +1104,7 @@ function loadTexture(texUnitEnum, src, fallbackType) {
   const fbCanvas = generateFallbackTexture(fallbackType);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);  // canvas already in correct orientation
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, fbCanvas);
-  applyTexParams();
+  applyTexParams(fbCanvas.width, fbCanvas.height);
 
   // Attempt to load the real image asynchronously
   const img = new Image();
@@ -729,7 +1113,7 @@ function loadTexture(texUnitEnum, src, fallbackType) {
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);   // PNGs need Y-flip for WebGL UV space
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
-    applyTexParams();
+    applyTexParams(img.width, img.height);
   };
   img.onerror = () => {
     console.log('Texture not found: ' + src + '  (using procedural fallback)');
@@ -737,11 +1121,71 @@ function loadTexture(texUnitEnum, src, fallbackType) {
   img.src = src;
 }
 
-function applyTexParams() {
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.REPEAT);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.REPEAT);
+function loadBackroomsDoorTexture(texUnitEnum) {
+  const tex = gl.createTexture();
+  gl.activeTexture(texUnitEnum);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+
+  const fbCanvas = generateFallbackTexture('door');
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, fbCanvas);
+  applyTexParams(fbCanvas.width, fbCanvas.height);
+
+  const topImg = new Image();
+  const bottomImg = new Image();
+  let topReady = false;
+  let bottomReady = false;
+
+  function uploadIfReady() {
+    if (!topReady || !bottomReady) return;
+    const width = Math.max(topImg.width, bottomImg.width);
+    const halfHeight = Math.max(topImg.height, bottomImg.height);
+    const cvs = document.createElement('canvas');
+    cvs.width = width;
+    cvs.height = halfHeight * 2;
+    const ctx = cvs.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, cvs.width, cvs.height);
+    ctx.drawImage(topImg, 0, 0, width, halfHeight);
+    ctx.drawImage(bottomImg, 0, halfHeight, width, halfHeight);
+
+    gl.activeTexture(texUnitEnum);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cvs);
+    applyTexParams(cvs.width, cvs.height);
+  }
+
+  topImg.onload = () => { topReady = true; uploadIfReady(); };
+  bottomImg.onload = () => { bottomReady = true; uploadIfReady(); };
+  topImg.onerror = () => console.log('Texture not found: textures/Oak_Door_(top_texture)_JE5_BE3.png  (using procedural fallback)');
+  bottomImg.onerror = () => console.log('Texture not found: textures/Oak_Door_(bottom_texture)_JE4_BE2.png  (using procedural fallback)');
+  topImg.src = 'textures/Oak_Door_(top_texture)_JE5_BE3.png';
+  bottomImg.src = 'textures/Oak_Door_(bottom_texture)_JE4_BE2.png';
+}
+
+function isPowerOfTwo(value) {
+  return value > 0 && (value & (value - 1)) === 0;
+}
+
+function applyTexParams(width, height) {
+  const pot = isPowerOfTwo(width || 0) && isPowerOfTwo(height || 0);
+  if (pot) {
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.REPEAT);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    if (g_anisoExt) {
+      const maxAniso = gl.getParameter(g_anisoExt.MAX_TEXTURE_MAX_ANISOTROPY_EXT) || 1;
+      gl.texParameterf(gl.TEXTURE_2D, g_anisoExt.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(4, maxAniso));
+    }
+  } else {
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.CLAMP_TO_EDGE);
+  }
 }
 
 // CLAMP_TO_EDGE params required for NPOT textures (all goop PNGs).
@@ -759,6 +1203,7 @@ function loadGoopTextures() {
     ...GOOP_FLOOR_TEXTURES,
     ...GOOP_WALL_LEFT_TEXTURES,
     ...GOOP_WALL_RIGHT_TEXTURES,
+    ...GOOP_WALL_DECOR_TEXTURES,
   ];
   for (const name of allNames) {
     const tex = gl.createTexture();
@@ -778,6 +1223,49 @@ function loadGoopTextures() {
       _goopTexParams();
     };
     img.onerror = () => console.log('goop texture missing: textures/' + name);
+    img.src = 'textures/' + name;
+  }
+}
+
+const SUBURB_TEXTURES = [
+  'road.png', 'sidewalk.png', 'grass.png', 'housewall.png', 'woodendeck.png',
+  'weed.png', 'dirt_unwatered.png', 'dirt_watered.png', 'fence.png',
+  'Grass_Block_(top_texture)_JE2.png', 'Oak_Door_(bottom_texture)_JE4_BE2.png',
+  'Oak_Door_(top_texture)_JE5_BE3.png', 'Sofa1_diff.png'
+];
+
+function getSuburbTextureUploadSource(name, img) {
+  if (name !== 'grass.png') return img;
+  const cvs = document.createElement('canvas');
+  cvs.width = img.height;
+  cvs.height = img.width;
+  const ctx = cvs.getContext('2d');
+  ctx.translate(cvs.width * 0.5, cvs.height * 0.5);
+  ctx.rotate(-Math.PI * 0.5);
+  ctx.drawImage(img, -img.width * 0.5, -img.height * 0.5);
+  return cvs;
+}
+
+function loadSuburbTextures() {
+  for (const name of SUBURB_TEXTURES) {
+    const tex = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    const fb = generateFallbackTexture(name.replace('.png', ''));
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, fb);
+    applyTexParams(fb.width, fb.height);
+    g_SuburbTexObjs[name] = tex;
+    const img = new Image();
+    img.onload = () => {
+      gl.activeTexture(gl.TEXTURE5);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      const src = getSuburbTextureUploadSource(name, img);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+      applyTexParams(src.width, src.height);
+    };
+    img.onerror = () => console.log('suburb texture missing: textures/' + name + ' (using fallback)');
     img.src = 'textures/' + name;
   }
 }
@@ -858,6 +1346,63 @@ function generateFallbackTexture(type) {
       }
       break;
     }
+    case 'road': {
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const stripe = (Math.abs(x - 15) < 2 && y % 16 < 8) ? 55 : 0;
+        const n = noise(14);
+        setpx(x, y, 42+n+stripe, 42+n+stripe, 45+n+stripe);
+      }
+      break;
+    }
+    case 'sidewalk': {
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const seam = (x % 16 === 0 || y % 16 === 0) ? -22 : 0;
+        const n = noise(12);
+        setpx(x, y, 150+n+seam, 150+n+seam, 145+n+seam);
+      }
+      break;
+    }
+    case 'grass': {
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const n = noise(32);
+        setpx(x, y, 44+n, 118+n, 42+n);
+      }
+      break;
+    }
+    case 'housewall': {
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const seam = (y % 8 === 0) ? -20 : 0;
+        const n = noise(16);
+        setpx(x, y, 178+n+seam, 164+n+seam, 136+n+seam);
+      }
+      break;
+    }
+    case 'woodendeck':
+    case 'fence': {
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const plank = (x % 8 === 0) ? -25 : 0;
+        const n = noise(14);
+        setpx(x, y, 120+n+plank, 78+n+plank, 38+n+plank);
+      }
+      break;
+    }
+    case 'weed': {
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const blade = (x + y * 3) % 7 < 2 ? 35 : 0;
+        const n = noise(22);
+        setpx(x, y, 30+n, 120+n+blade, 30+n);
+      }
+      break;
+    }
+    case 'dirt_unwatered':
+    case 'dirt_watered': {
+      const wet = type === 'dirt_watered';
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const n = noise(26);
+        setpx(x, y, (wet ? 74 : 110)+n, (wet ? 58 : 76)+n, (wet ? 42 : 48)+n);
+      }
+      break;
+    }
     // goop fallback: dark green-ish arrow shape on transparent bg
     // a simple right-pointing triangle so something is visible if goop_arrow.png is missing
     case 'goop': {
@@ -895,6 +1440,14 @@ function generateFallbackTexture(type) {
 function setupInput() {
   document.addEventListener('keydown', e => {
     const k = e.key.toLowerCase();
+    if ((k === 'e' || k === 'enter') && typeof g_gs !== 'undefined' && (g_gs.vnOpen || g_gs.signOpen)) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      g_keys[k] = false;
+      if (g_gs.vnOpen && typeof hideVN === 'function') hideVN();
+      else if (g_gs.signOpen && typeof closeBackroomsSign === 'function') closeBackroomsSign();
+      return;
+    }
     // ESC: pause toggle. handled here (not letting browser's default
     // pointer-lock release count as "intent to unpause") because the user
     // wants ESC to be the explicit pause button.
@@ -920,19 +1473,25 @@ function setupInput() {
   // "starts" (timer + entity AI + audio) once the user has clicked ENTER
   // on the title screen. That handler is wired in setupTitleScreen().
   canvas.addEventListener('click', () => {
-    if (g_started) canvas.requestPointerLock();
+    if (g_started) requestGamePointerLock();
   });
 
   document.addEventListener('pointerlockchange', () => {
     const locked = (document.pointerLockElement === canvas);
     const lockMsg = document.getElementById('lockMsg');
-    if (lockMsg) lockMsg.style.display = locked ? 'none' : 'block';
+    const suppressPause = g_suppressPointerPause;
+    if (lockMsg) lockMsg.style.display = (locked || suppressPause) ? 'none' : 'block';
     if (locked) {
+      g_ignoreNextMouseMove = true;
       document.addEventListener('mousemove', onMouseMove);
       // re-entering pointer lock from the pause menu = unpause.
       if (g_paused) togglePause();
     } else {
       document.removeEventListener('mousemove', onMouseMove);
+      if (suppressPause) {
+        g_suppressPointerPause = false;
+        return;
+      }
       // pressing ESC inside pointer-lock fires this event but NOT a keydown
       // (the browser eats it). so the cleanest "esc = pause" path is:
       // "any time we lose pointer-lock during gameplay, treat it as pause".
@@ -947,21 +1506,167 @@ function setupInput() {
   canvas.addEventListener('contextmenu', e => e.preventDefault());
 }
 
+function requestGamePointerLock() {
+  if (!canvas) return;
+  try {
+    const p = canvas.requestPointerLock();
+    if (p && p.catch) p.catch(err => console.log('pointer lock blocked:', err.message));
+  } catch (e) {
+    console.log('pointer lock failed:', e.message);
+  }
+}
+
 function onMouseMove(e) {
-  const sensitivity = 0.15;
-  // panLeft(+movementX) = yaw increase = turns RIGHT on screen
-  // (setLookAt convention: visual-right = cross(fwd,up) at negative-yaw side)
-  if (e.movementX !== 0) camera.panLeft(e.movementX * sensitivity);
-  if (e.movementY !== 0) camera.lookVertical(-e.movementY * sensitivity);
+  if (g_ignoreNextMouseMove) {
+    g_ignoreNextMouseMove = false;
+    return;
+  }
+  const mx = Math.max(-MOUSE_DELTA_CAP, Math.min(MOUSE_DELTA_CAP, e.movementX || 0));
+  const my = Math.max(-MOUSE_DELTA_CAP, Math.min(MOUSE_DELTA_CAP, e.movementY || 0));
+  // Accumulate deltas — applied once per frame in processInput to avoid
+  // sub-frame jitter from high-frequency mouse polling.
+  g_pendingMouseX += mx;
+  g_pendingMouseY += my;
 }
 
 function onMouseDown(e) {
   if (document.pointerLockElement !== canvas) return;
-  if (e.button !== 0) return;  // LMB only
-  const fwd = camera.getFwd();
+  if (e.button !== 0 && e.button !== 2) return;
+  if (typeof g_gs !== 'undefined' && g_gs.signOpen && typeof closeBackroomsSign === 'function') {
+    if (e.button === 0) closeBackroomsSign();
+    return;
+  }
+  if (typeof g_gs !== 'undefined' && g_gs.vnOpen && typeof hideVN === 'function') {
+    hideVN();
+    return;
+  }
+  const [tx, tz] = getInteractionTargetCell();
+  if (typeof handleNarrativeInteract === 'function' && handleNarrativeInteract(tx, tz, e.button)) return;
+  if (e.button === 0 && isDoor(tx, tz)) triggerWin();
+}
+
+function getViewRayDir() {
+  const yRad = camera.yaw * Math.PI / 180;
+  const pRad = camera.pitch * Math.PI / 180;
+  const cosp = Math.cos(pRad);
+  return [cosp * Math.cos(yRad), Math.sin(pRad), cosp * Math.sin(yRad)];
+}
+
+function isInteractionTargetRelevant(code) {
+  if (code === INTERACT_NONE) return false;
+  if (typeof g_gs === 'undefined') return true;
+  if (g_currentLevel !== LEVEL_SUBURBS) return code === INTERACT_SIGN;
+  if (g_gs.phase === GAME_PHASE.TUTORIAL_MOVE) return code === INTERACT_WEED;
+  if (g_gs.phase === GAME_PHASE.TUTORIAL_WEEDS) return code === INTERACT_WEED;
+  if (g_gs.phase === GAME_PHASE.TUTORIAL_SOIL_PICKUP) return code === INTERACT_SOIL_BAG;
+  if (g_gs.phase === GAME_PHASE.TUTORIAL_SOIL_PLACE) return code === INTERACT_GARDEN_PLOT;
+  if (g_gs.phase === GAME_PHASE.TUTORIAL_WATER_PICKUP) return code === INTERACT_WATER_CAN;
+  if (g_gs.phase === GAME_PHASE.TUTORIAL_WATER_PLACE) return code === INTERACT_GARDEN_PLOT;
+  if (g_gs.phase === GAME_PHASE.TUTORIAL_RETURN_CAN) return code === INTERACT_CAN_RETURN;
+  if (g_gs.phase === GAME_PHASE.TUTORIAL_GRASS_ROW) return code === INTERACT_GRASS_ROW;
+  if (g_gs.phase === GAME_PHASE.BACKROOMS_TRAPPED) return code === INTERACT_SIGN;
+  return false;
+}
+
+function rayAabbDistance(origin, dir, minX, minY, minZ, maxX, maxY, maxZ, maxReach) {
+  let tMin = 0;
+  let tMax = maxReach;
+  const mins = [minX, minY, minZ];
+  const maxs = [maxX, maxY, maxZ];
+  for (let axis = 0; axis < 3; axis++) {
+    const o = origin[axis];
+    const d = dir[axis];
+    if (Math.abs(d) < 0.00001) {
+      if (o < mins[axis] || o > maxs[axis]) return null;
+      continue;
+    }
+    let t1 = (mins[axis] - o) / d;
+    let t2 = (maxs[axis] - o) / d;
+    if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+    tMin = Math.max(tMin, t1);
+    tMax = Math.min(tMax, t2);
+    if (tMax < tMin) return null;
+  }
+  return tMin <= maxReach ? tMin : null;
+}
+
+function getObjectInteractionTarget(eye, dir, maxReach) {
+  let best = null;
+  function consider(tx, tz, minX, minY, minZ, maxX, maxY, maxZ) {
+    if (typeof getInteractiveAt === 'function' && !isInteractionTargetRelevant(getInteractiveAt(tx, tz))) return;
+    const t = rayAabbDistance(eye, dir, minX, minY, minZ, maxX, maxY, maxZ, maxReach);
+    if (t === null) return;
+    if (!best || t < best.t) best = { t, tx, tz };
+  }
+
+  if (typeof g_LevelModelSlots !== 'undefined') {
+    for (const slot of g_LevelModelSlots) {
+      const tx = Math.floor(slot.x);
+      const tz = Math.floor(slot.z);
+      const width = Math.max(0.25, slot.width || 0.7) + 0.22;
+      const length = Math.max(0.25, slot.length || 0.7) + 0.22;
+      const height = Math.max(0.25, slot.height || 1.0) + 0.18;
+      consider(tx, tz,
+        slot.x - width * 0.5, -0.06, slot.z - length * 0.5,
+        slot.x + width * 0.5, height, slot.z + length * 0.5);
+    }
+  }
+
+  if (typeof g_LevelItemSlots !== 'undefined') {
+    for (const slot of g_LevelItemSlots) {
+      const tx = Math.floor(slot.x);
+      const tz = Math.floor(slot.z);
+      const cx = tx + 0.5;
+      const cz = tz + 0.5;
+      const h = Math.max(0.35, slot.height || 0.55) + 0.16;
+      consider(tx, tz, cx - 0.42, -0.06, cz - 0.42, cx + 0.42, h, cz + 0.42);
+    }
+  }
+
+  if (typeof g_InteractiveMap !== 'undefined') {
+    for (let x = 0; x < MAP_SIZE; x++) {
+      for (let z = 0; z < MAP_SIZE; z++) {
+        const code = getInteractiveAt(x, z);
+        if (!isInteractionTargetRelevant(code) || (code !== INTERACT_GRASS_ROW && code !== INTERACT_CAN_RETURN)) continue;
+        const height = code === INTERACT_GRASS_ROW ? Math.max(0.18, g_Map[x][z]) : 0.35;
+        consider(x, z, x - 0.05, -0.06, z - 0.05, x + 1.05, height + 0.12, z + 1.05);
+      }
+    }
+  }
+
+  return best ? [best.tx, best.tz] : null;
+}
+
+function getInteractionTargetCell() {
   const eye = camera.eye.elements;
-  const [tx, tz] = getTargetCell(eye[0], eye[2], fwd[0], fwd[2]);
-  if (isDoor(tx, tz)) triggerWin();
+  const dir = getViewRayDir();
+  const objectHit = getObjectInteractionTarget(eye, dir, 4.6);
+  if (objectHit) return objectHit;
+
+  if (dir[1] < -0.05) {
+    const tFloor = eye[1] / -dir[1];
+    if (tFloor > 0.15 && tFloor <= 5.5) {
+      const floorCell = [Math.floor(eye[0] + dir[0] * tFloor), Math.floor(eye[2] + dir[2] * tFloor)];
+      if (typeof getInteractiveAt === 'function' && isInteractionTargetRelevant(getInteractiveAt(floorCell[0], floorCell[1]))) return floorCell;
+    }
+  }
+
+  const interactiveCells = [];
+  for (let t = 0.25; t <= 4.2; t += 0.12) {
+    const x = Math.floor(eye[0] + dir[0] * t);
+    const z = Math.floor(eye[2] + dir[2] * t);
+    if (interactiveCells.length && interactiveCells[interactiveCells.length - 1][0] === x && interactiveCells[interactiveCells.length - 1][1] === z) continue;
+    interactiveCells.push([x, z]);
+    if (typeof getInteractiveAt === 'function' && isInteractionTargetRelevant(getInteractiveAt(x, z))) return [x, z];
+  }
+  if (dir[1] < -0.05) {
+    const tFloor = eye[1] / -dir[1];
+    if (tFloor > 0.15 && tFloor <= 5.5) {
+      return [Math.floor(eye[0] + dir[0] * tFloor), Math.floor(eye[2] + dir[2] * tFloor)];
+    }
+  }
+  const fwd = camera.getFwd();
+  return getTargetCell(eye[0], eye[2], fwd[0], fwd[2]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -975,7 +1680,9 @@ function isBlockedAt(x, z) {
   for (const [cx, cz] of corners) {
     const bx = Math.floor(cx), bz = Math.floor(cz);
     if (bx < 0 || bx >= MAP_SIZE || bz < 0 || bz >= MAP_SIZE) return true;
-    if (g_Map[bx][bz] > 0) return true;
+    if (typeof isWorldBlockedCell === 'function') {
+      if (isWorldBlockedCell(bx, bz)) return true;
+    } else if (g_Map[bx][bz] > 0) return true;
   }
   // furniture acts as a solid circular obstacle. only check enabled kinds.
   if (typeof g_FurnitureSlots !== 'undefined') {
@@ -992,14 +1699,28 @@ function isBlockedAt(x, z) {
 function tryMove(dx, dz) {
   const e = camera.eye.elements;
   const nx = e[0] + dx, nz = e[2] + dz;
-  if      (!isBlockedAt(nx, nz))   { e[0] = nx; e[2] = nz; }
-  else if (!isBlockedAt(nx, e[2])) { e[0] = nx; }
-  else if (!isBlockedAt(e[0], nz)) { e[2] = nz; }
+  const canFull = (typeof canMoveToNarrative !== 'function') || canMoveToNarrative(nx, nz);
+  if      (canFull && !isBlockedAt(nx, nz))   { e[0] = nx; e[2] = nz; }
+  else if (((typeof canMoveToNarrative !== 'function') || canMoveToNarrative(nx, e[2])) && !isBlockedAt(nx, e[2])) { e[0] = nx; }
+  else if (((typeof canMoveToNarrative !== 'function') || canMoveToNarrative(e[0], nz)) && !isBlockedAt(e[0], nz)) { e[2] = nz; }
   camera.updateViewMatrix();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 function processInput(dt) {
+  // Apply accumulated mouse deltas once per frame (prevents sub-frame jitter
+  // from high-polling-rate mice applying many small increments between renders).
+  const sensitivity = 0.15;
+  if (g_pendingMouseX !== 0) { camera.panLeft(g_pendingMouseX * sensitivity);  g_pendingMouseX = 0; }
+  if (g_pendingMouseY !== 0) { camera.lookVertical(-g_pendingMouseY * sensitivity); g_pendingMouseY = 0; }
+
+  if (typeof isNarrativeMovementLocked === 'function' && isNarrativeMovementLocked()) {
+    g_isSprinting = false;
+    g_sprint = Math.min(1, g_sprint + SPRINT_REGEN * dt);
+    camera.updateViewMatrix();
+    return;
+  }
+
   // —— Sprint stamina bookkeeping (must precede speed calc) ———————————————
   // While locked out, sprinting is disabled regardless of input until the
   // bar regenerates fully back to 1.0.
@@ -1030,9 +1751,12 @@ function processInput(dt) {
   // D = screen-right = +right = (-fz, 0, +fx)
   if (g_keys['a']) { dx += fz * spd;  dz -= fx * spd; }
   if (g_keys['d']) { dx -= fz * spd;  dz += fx * spd; }
-  if (dx !== 0 || dz !== 0) tryMove(dx, dz);
-  if (g_keys['q']) camera.panLeft(rotSpd);
-  if (g_keys['e']) camera.panRight(rotSpd);
+  if (dx !== 0 || dz !== 0) {
+    tryMove(dx, dz);
+    if (typeof narrativeRecordMovement === 'function') narrativeRecordMovement();
+  }
+  if (g_keys['q'] && document.pointerLockElement !== canvas) camera.panLeft(rotSpd);
+  if (g_keys['e'] && document.pointerLockElement !== canvas) camera.panRight(rotSpd);
 
   // ── Walk-bob + player footstep audio ────────────────────────────────
   // We modulate eye-Y by a small sine while moving (and lerp it back when
@@ -1058,6 +1782,19 @@ function processInput(dt) {
 // ─────────────────────────────────────────────────────────────────────────────
 // HUD helpers
 // ─────────────────────────────────────────────────────────────────────────────
+function formatSpeedrunTime(seconds) {
+  const totalCentis = Math.max(0, Math.floor(seconds * 100));
+  const centis = totalCentis % 100;
+  const totalSecs = Math.floor(totalCentis / 100);
+  const secs = totalSecs % 60;
+  const mins = Math.floor(totalSecs / 60) % 60;
+  const hours = Math.floor(totalSecs / 3600);
+  const main = hours > 0
+    ? hours + ':' + String(mins).padStart(2, '0') + ':' + String(secs).padStart(2, '0')
+    : String(mins).padStart(2, '0') + ':' + String(secs).padStart(2, '0');
+  return main + '.' + String(centis).padStart(2, '0');
+}
+
 function updateHUD() {
   const secs = Math.max(0, g_timer);
   const mm   = Math.floor(secs / 60).toString().padStart(2, '0');
@@ -1066,7 +1803,13 @@ function updateHUD() {
   timerEl.textContent = mm + ':' + ss;
   timerEl.className   = secs < 10 ? 'danger' : '';
 
-  const dist  = getEntityDist();
+  const speedrunEl = document.getElementById('speedrunTimer');
+  if (speedrunEl) {
+    speedrunEl.textContent = 'TIME ' + formatSpeedrunTime(g_speedrunTime);
+    speedrunEl.classList.toggle('show', g_speedrunFinished);
+  }
+
+  const dist  = g_entityActive ? getEntityDist() : 999;
   const ratio = Math.max(0, Math.min(1, dist / 20));
   const fill  = document.getElementById('sanityFill');
   if (fill) {
@@ -1102,10 +1845,22 @@ function updateFps(timestamp) {
   g_frameCount++;
   if (timestamp - g_lastFpsMs >= 500) {
     const fps = (g_frameCount / ((timestamp - g_lastFpsMs) / 1000)).toFixed(0);
-    document.getElementById('fps').textContent = 'FPS: ' + fps;
+    document.getElementById('fps').textContent = 'FPS: ' + fps + getPerformanceHudSuffix();
     g_frameCount  = 0;
     g_lastFpsMs   = timestamp;
   }
+}
+
+function getPerformanceHudSuffix() {
+  if (!g_performanceMode || !canvas) return '';
+  return ' | PERF ' + canvas.width + 'x' + canvas.height;
+}
+
+function refreshFpsModeLabel() {
+  const fpsEl = document.getElementById('fps');
+  if (!fpsEl) return;
+  const base = (fpsEl.textContent || 'FPS: --').split(' | ')[0] || 'FPS: --';
+  fpsEl.textContent = base + getPerformanceHudSuffix();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1122,20 +1877,27 @@ function setupTitleScreen() {
   const overlay = document.getElementById('titleScreen');
   const startBtn = document.getElementById('startBtn');
   const flickerCb = document.getElementById('disableFlicker');
+  const perfCb = document.getElementById('performanceMode');
   if (!overlay || !startBtn) return;   // graceful fallback if HTML not added
 
   startBtn.addEventListener('click', (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
     g_flickerEnabled = !(flickerCb && flickerCb.checked);
+    setPerformanceMode(!!(perfCb && perfCb.checked));
     overlay.classList.remove('active');
     overlay.style.display = 'none';
+    g_speedrunTime = 0;
+    g_speedrunFinished = false;
+    const speedrunEl = document.getElementById('speedrunTimer');
+    if (speedrunEl) speedrunEl.classList.remove('show');
     g_started = true;
+    if (typeof startNarrativeSequence === 'function') startNarrativeSequence();
     try { if (g_audioCtx && g_audioCtx.state === 'suspended') g_audioCtx.resume(); }
     catch (e) { console.log('audio resume failed:', e.message); }
     try { initAudioFiles(); } catch (e) { console.log('audio init failed:', e.message); }
-    // Pointer lock can throw if the document isn't focused or if we're
-    // mid-fullscreen-transition. Wrap so it can never block game start.
+    // Pointer lock can throw if the document isn't focused. Wrap so it can
+    // never block game start.
     try {
       const p = canvas.requestPointerLock();
       if (p && p.catch) p.catch(err => console.log('pointer lock blocked:', err.message));
@@ -1145,11 +1907,87 @@ function setupTitleScreen() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // setupFullscreen — wires the FULLSCREEN HUD button.
-// Toggling fullscreen resizes the canvas backing-store to the viewport,
-// re-runs gl.viewport, and refreshes the camera projection so the aspect
-// ratio matches. Leaving fullscreen restores the original 800×600.
+// This is intentionally tab fullscreen instead of browser-native fullscreen:
+// browsers reserve Escape to leave native fullscreen, which conflicts with the
+// game's Escape-to-pause flow. We fill the current viewport with CSS instead.
 // ─────────────────────────────────────────────────────────────────────────────
 var g_origCanvasW = 0, g_origCanvasH = 0;
+var g_gameFullscreen = false;
+
+function syncFullscreenButtons() {
+  const label = g_gameFullscreen ? 'EXIT FS' : 'FULLSCREEN';
+  const titleBtn = document.getElementById('fullscreenBtn');
+  const pauseBtn = document.getElementById('pauseFsBtn');
+  if (titleBtn) titleBtn.textContent = label;
+  if (pauseBtn) pauseBtn.textContent = label;
+}
+
+function applyCurrentCanvasSize() {
+  const useFullscreenSize = g_gameFullscreen;
+  document.body.classList.toggle('game-fullscreen', useFullscreenSize);
+  if (useFullscreenSize) {
+    applyCanvasRenderSize(window.innerWidth, window.innerHeight);
+  } else {
+    applyCanvasRenderSize(g_origCanvasW || 800, g_origCanvasH || 600);
+  }
+  syncFullscreenButtons();
+}
+
+function setGameFullscreen(enabled) {
+  g_gameFullscreen = !!enabled;
+  applyCurrentCanvasSize();
+  const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+  if (fsEl) {
+    const exit = document.exitFullscreen || document.webkitExitFullscreen;
+    if (exit) exit.call(document);
+  }
+}
+
+function applyCanvasRenderSize(cssW, cssH) {
+  if (!canvas || !gl) return;
+  const scale = g_performanceMode ? PERFORMANCE_RENDER_SCALE : 1.0;
+  const displayW = Math.max(1, Math.floor(cssW));
+  const displayH = Math.max(1, Math.floor(cssH));
+  const renderW = Math.max(320, Math.floor(displayW * scale));
+  const renderH = Math.max(240, Math.floor(displayH * scale));
+  canvas.style.width = displayW + 'px';
+  canvas.style.height = displayH + 'px';
+  if (canvas.width !== renderW) canvas.width = renderW;
+  if (canvas.height !== renderH) canvas.height = renderH;
+  canvas.style.imageRendering = g_performanceMode ? 'pixelated' : '';
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  if (camera) camera.updateProjectionMatrix(canvas.width, canvas.height);
+  refreshFpsModeLabel();
+}
+
+function syncPerformanceCheckboxes() {
+  const titlePerf = document.getElementById('performanceMode');
+  const pausePerf = document.getElementById('pausePerformanceCb');
+  if (titlePerf) titlePerf.checked = g_performanceMode;
+  if (pausePerf) pausePerf.checked = g_performanceMode;
+}
+
+function setPerformanceMode(enabled) {
+  g_performanceMode = !!enabled;
+  syncPerformanceCheckboxes();
+  applyCurrentCanvasSize();
+  applyLevelFogSettings();
+}
+
+function applyLevelFogSettings() {
+  if (!gl) return;
+  if (typeof g_currentLevel !== 'undefined' && typeof LEVEL_SUBURBS !== 'undefined' && g_currentLevel === LEVEL_SUBURBS) {
+    if (u_fogNear) gl.uniform1f(u_fogNear, 6.0);
+    if (u_fogFar)  gl.uniform1f(u_fogFar,  24.0);
+    if (u_fogColor && typeof g_skyColor !== 'undefined') gl.uniform3f(u_fogColor, g_skyColor[0], g_skyColor[1], g_skyColor[2]);
+    return;
+  }
+  const near = g_performanceMode ? BACKROOMS_PERF_FOG_NEAR : BACKROOMS_FOG_NEAR;
+  const far  = g_performanceMode ? BACKROOMS_PERF_FOG_FAR  : BACKROOMS_FOG_FAR;
+  if (u_fogNear) gl.uniform1f(u_fogNear, near);
+  if (u_fogFar)  gl.uniform1f(u_fogFar, far);
+  if (u_fogColor) gl.uniform3f(u_fogColor, FOG_R, FOG_G, FOG_B);
+}
 
 function setupFullscreen() {
   const btn = document.getElementById('fullscreenBtn');
@@ -1159,43 +1997,17 @@ function setupFullscreen() {
   g_origCanvasW = canvas.width;
   g_origCanvasH = canvas.height;
 
-  function applySize() {
-    const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
-    if (isFs) {
-      canvas.width  = window.innerWidth;
-      canvas.height = window.innerHeight;
-      btn.textContent = 'EXIT FS';
-    } else {
-      canvas.width  = g_origCanvasW;
-      canvas.height = g_origCanvasH;
-      btn.textContent = 'FULLSCREEN';
-    }
-    gl.viewport(0, 0, canvas.width, canvas.height);
-    if (camera) camera.updateProjectionMatrix(canvas.width, canvas.height);
-  }
-
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
-    const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
-    // use documentElement so fullscreen works in live server and github pages
-    const target = document.documentElement;
-    if (!fsEl) {
-      const req = target.requestFullscreen || target.webkitRequestFullscreen;
-      if (req) {
-        const r = req.call(target);
-        if (r && r.catch) r.catch(err => console.log('fs blocked:', err.message));
-      }
-    } else {
-      const exit = document.exitFullscreen || document.webkitExitFullscreen;
-      if (exit) exit.call(document);
-    }
+    setGameFullscreen(!g_gameFullscreen);
   });
 
-  document.addEventListener('fullscreenchange', applySize);
-  document.addEventListener('webkitfullscreenchange', applySize);
+  document.addEventListener('fullscreenchange', applyCurrentCanvasSize);
+  document.addEventListener('webkitfullscreenchange', applyCurrentCanvasSize);
   window.addEventListener('resize', () => {
-    if (document.fullscreenElement || document.webkitFullscreenElement) applySize();
+    if (g_gameFullscreen) applyCurrentCanvasSize();
   });
+  applyCurrentCanvasSize();
 }
 
 // pause-menu wiring. resume button, flicker checkbox, master volume slider,
@@ -1203,6 +2015,7 @@ function setupFullscreen() {
 function setupPauseMenu() {
   const resumeBtn = document.getElementById('pauseResumeBtn');
   const flickerCb = document.getElementById('pauseFlickerCb');
+  const perfCb    = document.getElementById('pausePerformanceCb');
   const volSlider = document.getElementById('pauseVolume');
   const volLabel  = document.getElementById('pauseVolumeVal');
   const fsBtn     = document.getElementById('pauseFsBtn');
@@ -1224,6 +2037,13 @@ function setupPauseMenu() {
     });
   }
 
+  if (perfCb) {
+    perfCb.checked = g_performanceMode;
+    perfCb.addEventListener('change', () => {
+      setPerformanceMode(perfCb.checked);
+    });
+  }
+
   if (volSlider && volLabel) {
     volSlider.value = String(Math.round(g_masterVolume * 100));
     volLabel.textContent = volSlider.value + '%';
@@ -1233,7 +2053,11 @@ function setupPauseMenu() {
       volLabel.textContent = volSlider.value + '%';
       // <audio> element volumes need updating live (webaudio one-shots
       // pick up the new value next time they fire).
-      if (g_ambienceEl) g_ambienceEl.volume = VOL_AMBIENCE * v;
+      if (g_ambienceEl) {
+        const inBackrooms = (typeof g_currentLevel !== 'undefined' && g_currentLevel === LEVEL_BACKROOMS);
+        g_ambienceEl.volume = inBackrooms ? clampAudioVolume(VOL_AMBIENCE * v) : 0.0;
+      }
+      if (g_chaseEl) g_chaseEl.volume = Math.min(g_chaseEl.volume, clampAudioVolume(VOL_CHASE_MAX * v));
     };
     volSlider.addEventListener('input', apply);
   }
@@ -1241,15 +2065,7 @@ function setupPauseMenu() {
   if (fsBtn) {
     fsBtn.addEventListener('click', e => {
       e.stopPropagation();
-      const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
-      const target = document.documentElement;
-      if (!fsEl) {
-        const req = target.requestFullscreen || target.webkitRequestFullscreen;
-        if (req) req.call(target);
-      } else {
-        const exit = document.exitFullscreen || document.webkitExitFullscreen;
-        if (exit) exit.call(document);
-      }
+      setGameFullscreen(!g_gameFullscreen);
     });
   }
 }

@@ -32,6 +32,16 @@
       font-size: 12px; opacity: 0.55;
     }
 
+    #objectiveHUD {
+      position: absolute; top: 30px; left: 10px;
+      max-width: min(360px, calc(100% - 20px));
+      font-size: 12px;
+      line-height: 1.35;
+      color: rgba(200,184,90,0.9);
+      letter-spacing: 1px;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.95), 0 0 8px rgba(0,0,0,0.8), 1px 1px 0 rgba(0,0,0,0.9);
+    }
+
     /* Countdown timer */
     #timer {
       position: absolute; top: 8px; left: 50%;
@@ -249,7 +259,7 @@
     #titleScreen .disclaimer strong { color: #ff6060; letter-spacing: 2px; }
     #titleScreen .opts {
       color: #c8b85a; font-size: 12px; margin-bottom: 16px;
-      display: flex; align-items: center; gap: 8px;
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
     }
     #titleScreen .opts input { transform: scale(1.2); cursor: pointer; }
     #titleScreen .opts label  { cursor: pointer; user-select: none; }
@@ -296,14 +306,17 @@
     }
     #fullscreenBtn:hover { background: rgba(200,184,90,0.18); color: #c8b85a; }
   </style>
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <div id="container">
     <canvas id="webgl" width="800" height="600"></canvas>
     <div id="hud">
       <div id="fps">FPS: --</div>
+      <div id="objectiveHUD">Objective: Tend to your garden</div>
+      <div id="speedrunTimer">RUN 00:00.00</div>
       <div id="timer">02:00</div>
-      <div id="objective">FIND THE EXIT DOOR BEFORE TIME RUNS OUT</div>
+      <div id="objective">HE IS ALWAYS WATCHING. FIND THE EXIT.</div>
       <div id="crosshair"></div>
       <div id="sanityContainer">
         <div id="sanityLabel">PROXIMITY</div>
@@ -312,7 +325,7 @@
         <div id="sprintBar"><div id="sprintFill"></div></div>
       </div>
       <div id="controls">
-        WASD&nbsp;=&nbsp;Move &nbsp;|&nbsp; SHIFT&nbsp;=&nbsp;Sprint &nbsp;|&nbsp; Mouse&nbsp;=&nbsp;Look &nbsp;|&nbsp; Q/E&nbsp;=&nbsp;Turn &nbsp;|&nbsp; LMB&nbsp;=&nbsp;Interact with door
+        WASD&nbsp;=&nbsp;Move &nbsp;|&nbsp; SHIFT&nbsp;=&nbsp;Sprint &nbsp;|&nbsp; Mouse&nbsp;=&nbsp;Look &nbsp;|&nbsp; LMB&nbsp;=&nbsp;Interact
       </div>
       <div id="lockMsg">
         Click to enter
@@ -330,6 +343,7 @@
     <div id="winScreen" class="overlay">
       <h1>YOU ESCAPED</h1>
       <p>The door slammed behind you. You're out.</p>
+      <p id="finalRunTime">Your time was 00:00.00.</p>
       <p style="margin-top:28px;color:#555;font-size:11px;">Refresh to play again</p>
     </div>
     <div id="pauseScreen" class="overlay">
@@ -338,6 +352,10 @@
         <div class="pauseRow">
           <input type="checkbox" id="pauseFlickerCb">
           <label for="pauseFlickerCb">Disable flickering lights</label>
+        </div>
+        <div class="pauseRow">
+          <input type="checkbox" id="pausePerformanceCb">
+          <label for="pausePerformanceCb">Performance mode</label>
         </div>
         <div class="pauseRow">
           <label for="pauseVolume">Master volume</label>
@@ -353,6 +371,42 @@
     </div>
     <div id="roundBanner"></div>
 
+    <!-- Narrative UI layer: Act 1 tutorial, VN dialogue, inventory, sign modal -->
+    <div id="fadeOverlay" class="active">
+      <div id="fadeText">after a long day of work...</div>
+    </div>
+
+    <div id="controlsToast">
+      <div class="toastTitle">CONTROLS</div>
+      <div class="toastBody">
+        <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move &nbsp;|&nbsp;
+        <kbd>SHIFT</kbd> sprint &nbsp;|&nbsp;
+        mouse look &nbsp;|&nbsp; <kbd>LMB</kbd> interact
+      </div>
+    </div>
+
+    <div id="vnBox">
+      <div id="vnAuthor">ME</div>
+      <div id="vnText"></div>
+      <div id="vnContinue">CLICK / E / ENTER TO CONTINUE</div>
+    </div>
+
+    <div id="inventorySlot">
+      <div id="invIcon"></div>
+      <div id="invItemName"></div>
+      <div id="invUseCount"></div>
+    </div>
+
+    <div id="signPopup">
+      <div id="signWrapper">
+        <div id="signCard">
+          <div id="signText">GET OUT OF HERE,
+HE FOLLOWS YOU EVERYWHERE</div>
+        </div>
+        <button id="signCloseBtn" type="button">CLOSE</button>
+      </div>
+    </div>
+
     <!-- Title / disclaimer (shown by default — must click ENTER to begin) -->
     <div id="titleScreen" class="overlay active">
       <h1>THE BACKROOMS</h1>
@@ -367,6 +421,8 @@
       <div class="opts">
         <input type="checkbox" id="disableFlicker">
         <label for="disableFlicker">Disable flickering lights</label>
+        <input type="checkbox" id="performanceMode">
+        <label for="performanceMode">Performance mode</label>
         <button id="fullscreenBtn" type="button">FULLSCREEN</button>
       </div>
       <button id="startBtn" type="button">ENTER</button>
@@ -406,6 +462,7 @@
   <script src="entity_model.js"></script>  <!-- baked geometry; run models/bake_entity.py to (re)generate -->
   <script src="animSystem.js"></script>
   <script src="entity.js"></script>
+  <script src="gameState.js"></script>
   <script src="main.js"></script>
 </body>
 </html>
