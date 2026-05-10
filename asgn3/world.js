@@ -415,10 +415,12 @@ function initLevel2Map() {
   function tryBlock(bx, bz) {
     if (bx < 1 || bx >= MAP_SIZE - 1 || bz < 1 || bz >= MAP_SIZE - 1) return false;
     if (g_Map[bx][bz] !== 0) return false;
-    // Don't block in the spawn room or door foyer
-    const inSpawnRoom = bx >= rooms[0].x0 && bx <= rooms[0].x1 && bz >= rooms[0].z0 && bz <= rooms[0].z1;
-    const inDoorRoom  = bx >= rooms[1].x0 && bx <= rooms[1].x1 && bz >= rooms[1].z0 && bz <= rooms[1].z1;
-    if (inSpawnRoom || inDoorRoom) return false;
+    // Keep only a small breathing pocket at spawn/exit. The rest of those
+    // rooms can be obstructed so sightlines stay short and culling stays useful.
+    const spawnDx = bx - spawnCellX, spawnDz = bz - spawnCellZ;
+    const doorDx = bx - doorReachX, doorDz = bz - doorReachZ;
+    if (spawnDx * spawnDx + spawnDz * spawnDz <= 4) return false;
+    if (doorDx * doorDx + doorDz * doorDz <= 4) return false;
     g_Map[bx][bz] = WALL_H;
     if (!bfsReach(spawnCellX, spawnCellZ, doorReachX, doorReachZ)) {
       g_Map[bx][bz] = 0;       // rollback
@@ -431,9 +433,9 @@ function initLevel2Map() {
   function regionStep(coord) {
     const h = ((coord * 73856093) ^ ((coord >> 3) * 19349663)) >>> 0;
     const r = (h % 1000) / 1000;
-    if (r < 0.20) return 16 + Math.floor(rng() * 4);   // open
-    if (r < 0.55) return 11 + Math.floor(rng() * 3);   // medium
-    return 7 + Math.floor(rng() * 3);                  // dense / maze-y
+    if (r < 0.12) return 13 + Math.floor(rng() * 3);   // open-ish
+    if (r < 0.48) return 9 + Math.floor(rng() * 3);    // medium
+    return 6 + Math.floor(rng() * 3);                  // dense / maze-y
   }
   function breakRow(z) {
     let runStart = -1;
@@ -745,9 +747,13 @@ function loadLevel(levelID) {
     if (typeof u_isBackrooms !== 'undefined') gl.uniform1i(u_isBackrooms, levelID === LEVEL_BACKROOMS ? 1 : 0);
     if (levelID === LEVEL_SUBURBS) {
       gl.clearColor(g_skyColor[0], g_skyColor[1], g_skyColor[2], 1.0);
-      if (u_fogNear) gl.uniform1f(u_fogNear, 6.0);
-      if (u_fogFar)  gl.uniform1f(u_fogFar,  24.0);
-      if (u_fogColor) gl.uniform3f(u_fogColor, g_skyColor[0], g_skyColor[1], g_skyColor[2]);
+      if (typeof applyLevelFogSettings === 'function') {
+        applyLevelFogSettings();
+      } else {
+        if (u_fogNear) gl.uniform1f(u_fogNear, 4.0);
+        if (u_fogFar)  gl.uniform1f(u_fogFar,  16.0);
+        if (u_fogColor) gl.uniform3f(u_fogColor, g_skyColor[0], g_skyColor[1], g_skyColor[2]);
+      }
       document.body.classList.add('level-suburbs');
       document.body.classList.remove('level-backrooms', 'level-backrooms-trapped');
       if (typeof g_ambienceEl !== 'undefined' && g_ambienceEl) g_ambienceEl.volume = 0.0;
@@ -1110,7 +1116,7 @@ function isWorldChunkVisible(chunk) {
   const dx = chunk.centerX - e[0];
   const dz = chunk.centerZ - e[2];
   const perfMode = (typeof g_performanceMode !== 'undefined' && g_performanceMode);
-  const maxDist = perfMode ? 14.0 : 31.0;
+  const maxDist = perfMode ? 9.0 : 18.0;
   const distLimit = maxDist + chunk.radius;
   if (dx * dx + dz * dz > distLimit * distLimit) return false;
 
@@ -1120,8 +1126,8 @@ function isWorldChunkVisible(chunk) {
 
   const side = Math.abs(dx * fwd[2] - dz * fwd[0]);
   const sideLimit = perfMode
-    ? Math.max(5.0, forward * 0.72 + chunk.radius + 3.0)
-    : Math.max(8.0, forward * 1.05 + chunk.radius + 5.0);
+    ? Math.max(4.0, forward * 0.52 + chunk.radius + 2.0)
+    : Math.max(6.0, forward * 0.82 + chunk.radius + 3.5);
   return side <= sideLimit;
 }
 

@@ -171,8 +171,10 @@ The chunk culling is approximate, not perfect wall occlusion. It uses:
 - side distance from the view direction
 
 This skips chunks that are too far away, behind the player, or far outside the
-forward view area. It works well with fog because distant geometry would be
-mostly invisible anyway.
+forward view area. Normal mode is already fairly tight so the Backrooms does not
+draw too much beyond the fog. Performance mode tightens the distance and side
+cone further. It works well with fog because distant geometry would be mostly
+invisible anyway.
 
 Suburb geometry is batched by texture name instead of Backrooms material group.
 buildSuburbGeometry() creates batches for road, sidewalk, grass, house wall,
@@ -658,10 +660,14 @@ shaded. The canvas uses pixelated upscaling and the FPS text shows the current
 render size so the setting is visually obvious.
 
 Performance mode also changes Backrooms visibility. Normal Backrooms fog is near
-2.5 and far 20.0. Performance-mode Backrooms fog is near 1.5 and far 11.0, so
+1.8 and far 14.0. Performance-mode Backrooms fog is near 1.0 and far 8.5, so
 less distant geometry is visible. The chunk culling distance and side cone are
 tightened to match the shorter fog, which means renderWorldChunks() skips more
 8x8 chunks before issuing draw calls.
+
+Performance mode also keeps the suburb level foggier than normal mode. The
+suburb uses near 4.0 / far 16.0 normally, and near 2.5 / far 10.0 in performance
+mode.
 
 Other performance decisions:
 
@@ -670,6 +676,12 @@ Other performance decisions:
 - Backrooms geometry is split into 8x8 chunks
 - chunks outside the distance/view range are skipped, with a tighter range in
   performance mode
+- the Backrooms obstruction pass only protects a small spawn/exit breathing
+  pocket instead of entire rooms, so long sightlines are broken up more often
+- HUD DOM writes are skipped unless the displayed value actually changes, which
+  reduces layout/style churn and helps frame pacing feel smoother
+- repeated furniture and prop draws reuse Matrix4 objects inside their loops,
+  reducing garbage collection spikes
 - the entity mesh is pre-baked into entity_model.js
 - smaller props/furniture use runtime OBJ parsing
 - mipmaps reduce texture shimmer and can reduce distant texture sampling cost
@@ -684,9 +696,10 @@ Fog and lighting
 Fog is calculated in the fragment shader from camera distance. The shader mixes
 the lit surface color into u_fogColor between u_fogNear and u_fogFar.
 
-- Suburb fog: near 6.0, far 24.0, color matches the blue sky.
-- Backrooms fog: near 2.5, far 20.0, warm tan color.
-- Backrooms performance fog: near 1.5, far 11.0, same warm tan color, used to
+- Suburb fog: near 4.0, far 16.0, color matches the blue sky.
+- Suburb performance fog: near 2.5, far 10.0, same blue sky color.
+- Backrooms fog: near 1.8, far 14.0, warm tan color.
+- Backrooms performance fog: near 1.0, far 8.5, same warm tan color, used to
   hide more distant chunks and make culling more aggressive.
 
 Lights are uploaded from g_LightPositions into a uniform array. The shader uses

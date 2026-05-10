@@ -47,10 +47,14 @@ var g_speedrunFinished = false;
 var g_dimTimer = 0;            // seconds left in post-round lights-off effect
 var g_performanceMode = false;
 const PERFORMANCE_RENDER_SCALE = 0.40;
-const BACKROOMS_FOG_NEAR = 2.5;
-const BACKROOMS_FOG_FAR = 20.0;
-const BACKROOMS_PERF_FOG_NEAR = 1.5;
-const BACKROOMS_PERF_FOG_FAR = 11.0;
+const SUBURB_FOG_NEAR = 4.0;
+const SUBURB_FOG_FAR = 16.0;
+const SUBURB_PERF_FOG_NEAR = 2.5;
+const SUBURB_PERF_FOG_FAR = 10.0;
+const BACKROOMS_FOG_NEAR = 1.8;
+const BACKROOMS_FOG_FAR = 14.0;
+const BACKROOMS_PERF_FOG_NEAR = 1.0;
+const BACKROOMS_PERF_FOG_FAR = 8.5;
 var g_anisoExt = null;
 var g_SuburbTexObjs = {};      // dynamic sampler5 textures for Level 1
 var g_LevelModelMeshes = {};   // OBJ meshes for Level 1 models (fence)
@@ -528,6 +532,7 @@ function loadFurnitureMeshes() {
 function drawFurniture() {
   if (typeof g_FurnitureSlots === 'undefined' || g_FurnitureSlots.length === 0) return;
   const stride = 32;
+  const m = new Matrix4();
   for (const slot of g_FurnitureSlots) {
     // skip if this kind was disabled
     try { if (eval('ENABLE_' + slot.kind) === false) continue; } catch(_) {}
@@ -535,7 +540,7 @@ function drawFurniture() {
     if (!mesh) continue;
     const def = FURNITURE_DEFS[slot.kind];
 
-    const m = new Matrix4();
+    m.setIdentity();
     m.translate(slot.x, 0.0, slot.z);
     m.rotate(slot.yaw * (180 / Math.PI), 0, 1, 0);
     m.scale(mesh.scale, mesh.scale, mesh.scale);
@@ -626,13 +631,14 @@ function loadLevelModelMeshes() {
 function drawLevelModels() {
   if (!g_LevelModelSlots || g_LevelModelSlots.length === 0) return;
   const stride = 32;
+  const m = new Matrix4();
   for (const slot of g_LevelModelSlots) {
     const mesh = g_LevelModelMeshes[slot.kind];
     if (!mesh) continue;
     const sx = (slot.width || 0.18) / mesh.width;
     const sy = (slot.height || 1.4) / mesh.height;
     const sz = (slot.length || 8.0) / mesh.length;
-    const m = new Matrix4();
+    m.setIdentity();
     m.translate(slot.x, 0.0, slot.z);
     m.rotate(slot.yaw || 0, 0, 1, 0);
     m.scale(sx, sy, sz);
@@ -969,11 +975,12 @@ function drawExitDoorMarker() {
     { y: 2.25, z: doorZ,        sy: 0.11, sz: 1.34 },
     { y: 0.03, z: doorZ,        sy: 0.06, sz: 1.34 },
   ];
+  const frameMatrix = new Matrix4();
   for (const piece of framePieces) {
-    const m = new Matrix4();
-    m.translate(doorX - 0.045, piece.y, piece.z);
-    m.scale(0.07, piece.sy, piece.sz);
-    gl.uniformMatrix4fv(u_ModelMatrix, false, m.elements);
+    frameMatrix.setIdentity();
+    frameMatrix.translate(doorX - 0.045, piece.y, piece.z);
+    frameMatrix.scale(0.07, piece.sy, piece.sz);
+    gl.uniformMatrix4fv(u_ModelMatrix, false, frameMatrix.elements);
     gl.drawArrays(gl.TRIANGLES, 0, 36);
   }
 
@@ -1795,28 +1802,63 @@ function formatSpeedrunTime(seconds) {
   return main + '.' + String(centis).padStart(2, '0');
 }
 
+var g_lastTimerText = '';
+var g_lastTimerDanger = false;
+var g_lastSpeedrunText = '';
+var g_lastSpeedrunShown = false;
+var g_lastSanityWidth = '';
+var g_lastSanityBg = '';
+var g_lastSprintWidth = '';
+var g_lastSprintBg = '';
+var g_lastSprintOpacity = '';
+
 function updateHUD() {
   const secs = Math.max(0, g_timer);
   const mm   = Math.floor(secs / 60).toString().padStart(2, '0');
   const ss   = Math.floor(secs % 60).toString().padStart(2, '0');
   const timerEl = document.getElementById('timer');
-  timerEl.textContent = mm + ':' + ss;
-  timerEl.className   = secs < 10 ? 'danger' : '';
+  const timerText = mm + ':' + ss;
+  const timerDanger = secs < 10;
+  if (timerEl && timerText !== g_lastTimerText) {
+    timerEl.textContent = timerText;
+    g_lastTimerText = timerText;
+  }
+  if (timerEl && timerDanger !== g_lastTimerDanger) {
+    timerEl.className = timerDanger ? 'danger' : '';
+    g_lastTimerDanger = timerDanger;
+  }
 
   const speedrunEl = document.getElementById('speedrunTimer');
   if (speedrunEl) {
-    speedrunEl.textContent = 'TIME ' + formatSpeedrunTime(g_speedrunTime);
-    speedrunEl.classList.toggle('show', g_speedrunFinished);
+    if (g_speedrunFinished || g_lastSpeedrunShown) {
+      const speedrunText = 'TIME ' + formatSpeedrunTime(g_speedrunTime);
+      if (speedrunText !== g_lastSpeedrunText) {
+        speedrunEl.textContent = speedrunText;
+        g_lastSpeedrunText = speedrunText;
+      }
+    }
+    if (g_speedrunFinished !== g_lastSpeedrunShown) {
+      speedrunEl.classList.toggle('show', g_speedrunFinished);
+      g_lastSpeedrunShown = g_speedrunFinished;
+    }
   }
 
   const dist  = g_entityActive ? getEntityDist() : 999;
   const ratio = Math.max(0, Math.min(1, dist / 20));
   const fill  = document.getElementById('sanityFill');
   if (fill) {
-    fill.style.width      = (ratio * 100) + '%';
-    fill.style.background = ratio > 0.5 ? '#4aff60'
-                          : ratio > 0.25 ? '#ffcc00'
-                          : '#ff3030';
+    const sanityWidth = Math.round(ratio * 100) + '%';
+    const sanityBg = ratio > 0.5 ? '#4aff60'
+                   : ratio > 0.25 ? '#ffcc00'
+                   : '#ff3030';
+    if (sanityWidth !== g_lastSanityWidth) {
+      fill.style.width = sanityWidth;
+      g_lastSanityWidth = sanityWidth;
+    }
+    if (sanityBg !== g_lastSanityBg) {
+      fill.style.background = sanityBg;
+      g_lastSanityBg = sanityBg;
+    }
   }
 
   // Sprint gauge — cyan when full, fades to red as it depletes.
@@ -1824,17 +1866,31 @@ function updateHUD() {
   // dim and bright red so the player sees they cannot sprint yet.
   const sprintFill = document.getElementById('sprintFill');
   if (sprintFill) {
-    sprintFill.style.width = (g_sprint * 100) + '%';
+    const sprintWidth = Math.round(g_sprint * 100) + '%';
+    if (sprintWidth !== g_lastSprintWidth) {
+      sprintFill.style.width = sprintWidth;
+      g_lastSprintWidth = sprintWidth;
+    }
+    let sprintBg;
+    let sprintOpacity;
     if (g_sprintLocked) {
       // Slow ~1.2 Hz pulse, opacity 0.35 ↔ 1.0
       const pulse = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(performance.now() * 0.0075));
-      sprintFill.style.background = '#ff3030';
-      sprintFill.style.opacity    = pulse.toFixed(3);
+      sprintBg = '#ff3030';
+      sprintOpacity = pulse.toFixed(3);
     } else {
-      sprintFill.style.opacity    = '1';
-      sprintFill.style.background = g_sprint > 0.4  ? '#5ec8ff'
-                                  : g_sprint > 0.15 ? '#ffaa33'
-                                  : '#ff5050';
+      sprintOpacity = '1';
+      sprintBg = g_sprint > 0.4  ? '#5ec8ff'
+               : g_sprint > 0.15 ? '#ffaa33'
+               : '#ff5050';
+    }
+    if (sprintBg !== g_lastSprintBg) {
+      sprintFill.style.background = sprintBg;
+      g_lastSprintBg = sprintBg;
+    }
+    if (sprintOpacity !== g_lastSprintOpacity) {
+      sprintFill.style.opacity = sprintOpacity;
+      g_lastSprintOpacity = sprintOpacity;
     }
   }
 
@@ -1879,6 +1935,10 @@ function setupTitleScreen() {
   const flickerCb = document.getElementById('disableFlicker');
   const perfCb = document.getElementById('performanceMode');
   if (!overlay || !startBtn) return;   // graceful fallback if HTML not added
+
+  if (perfCb) {
+    perfCb.addEventListener('change', () => setPerformanceMode(perfCb.checked));
+  }
 
   startBtn.addEventListener('click', (ev) => {
     ev.preventDefault();
@@ -1977,8 +2037,10 @@ function setPerformanceMode(enabled) {
 function applyLevelFogSettings() {
   if (!gl) return;
   if (typeof g_currentLevel !== 'undefined' && typeof LEVEL_SUBURBS !== 'undefined' && g_currentLevel === LEVEL_SUBURBS) {
-    if (u_fogNear) gl.uniform1f(u_fogNear, 6.0);
-    if (u_fogFar)  gl.uniform1f(u_fogFar,  24.0);
+    const near = g_performanceMode ? SUBURB_PERF_FOG_NEAR : SUBURB_FOG_NEAR;
+    const far  = g_performanceMode ? SUBURB_PERF_FOG_FAR  : SUBURB_FOG_FAR;
+    if (u_fogNear) gl.uniform1f(u_fogNear, near);
+    if (u_fogFar)  gl.uniform1f(u_fogFar,  far);
     if (u_fogColor && typeof g_skyColor !== 'undefined') gl.uniform3f(u_fogColor, g_skyColor[0], g_skyColor[1], g_skyColor[2]);
     return;
   }
