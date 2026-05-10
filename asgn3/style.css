@@ -45,6 +45,21 @@ body.game-fullscreen #container {
   width: 100vw;
   height: 100vh;
   background: #000;
+  border: 0;
+  box-shadow: none;
+}
+
+body.game-fullscreen .win95-titlebar,
+body.game-fullscreen .win95-menubar {
+  display: none;
+}
+
+body.game-fullscreen #gameViewport {
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  border: 0;
+  box-shadow: none;
 }
 
 body.game-fullscreen #webgl {

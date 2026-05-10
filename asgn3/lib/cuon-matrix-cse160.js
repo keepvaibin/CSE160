@@ -578,7 +578,8 @@ class Matrix4 {
 
     // Multiply the matrix for rotation from the right
     rotate = function(angle, x, y, z) {
-      return this.concat(new Matrix4().setRotate(angle, x, y, z));
+      if (!Matrix4._rotateTemp) Matrix4._rotateTemp = new Matrix4();
+      return this.concat(Matrix4._rotateTemp.setRotate(angle, x, y, z));
     };
 
     // Set the viewing matrix

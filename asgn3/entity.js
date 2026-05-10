@@ -51,6 +51,41 @@ var g_entity = {
   inChase: false,    // true while burst-speed (LOS within range)
 };
 
+var g_pathMapSize = 0;
+var g_pathStepX = null;
+var g_pathStepZ = null;
+var g_pathSeen = null;
+var g_pathQueueX = null;
+var g_pathQueueZ = null;
+var g_pathStamp = 1;
+var g_pathTargetX = -999;
+var g_pathTargetZ = -999;
+
+function _pathIndex(x, z) {
+  return x * MAP_SIZE + z;
+}
+
+function _ensurePathBuffers() {
+  const total = MAP_SIZE * MAP_SIZE;
+  if (g_pathMapSize === MAP_SIZE && g_pathStepX && g_pathStepX.length === total) return;
+  g_pathMapSize = MAP_SIZE;
+  g_pathStepX = new Int8Array(total);
+  g_pathStepZ = new Int8Array(total);
+  g_pathSeen = new Uint32Array(total);
+  g_pathQueueX = new Int16Array(total);
+  g_pathQueueZ = new Int16Array(total);
+  g_pathStamp = 1;
+  g_pathTargetX = -999;
+  g_pathTargetZ = -999;
+}
+
+function resetEntityPath() {
+  g_entity.pathDir = null;
+  g_entity.pathRecalcTimer = 0;
+  g_pathTargetX = -999;
+  g_pathTargetZ = -999;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // initEntityModel — upload all baked geometry to the GPU
 // ─────────────────────────────────────────────────────────────────────────────
@@ -106,7 +141,7 @@ function _entityBlockedAt(x, z) {
   // furniture is also solid for the entity. only check enabled kinds.
   if (typeof g_FurnitureSlots !== 'undefined') {
     for (const f of g_FurnitureSlots) {
-      try { if (eval('ENABLE_' + f.kind) === false) continue; } catch(_) {}
+      if (typeof isFurnitureKindEnabled === 'function' && !isFurnitureKindEnabled(f.kind)) continue;
       const dx = x - f.x, dz = z - f.z;
       if (dx * dx + dz * dz < (0.55 + r) * (0.55 + r)) return true;
     }
@@ -121,60 +156,88 @@ function _entityBlockedAt(x, z) {
 //   For every visited cell store the (dx,dz) pointing toward the cell we came
 //   from — i.e., the next step toward the player.  The entity then queries
 //   this lookup at its current cell to choose its movement direction.
-//   Cost: O(MAP_SIZE^2) — 32×32 = 1024 cells, runs in <1 ms.
+//   Cost: O(MAP_SIZE^2), but the arrays are reused so the chase does not
+//   allocate thousands of tiny arrays during play.
 // ─────────────────────────────────────────────────────────────────────────────
 function _recomputePath() {
+  _ensurePathBuffers();
   const eye = camera.eye.elements;
   const sx  = Math.floor(eye[0]);
   const sz  = Math.floor(eye[2]);
-  if (sx < 0 || sx >= MAP_SIZE || sz < 0 || sz >= MAP_SIZE) return;
-  if (g_Map[sx][sz] > 0) return;
+  if (sx < 0 || sx >= MAP_SIZE || sz < 0 || sz >= MAP_SIZE) return false;
+  if (g_Map[sx][sz] > 0) return false;
 
-  const dir = new Array(MAP_SIZE);
-  for (let i = 0; i < MAP_SIZE; i++) dir[i] = new Array(MAP_SIZE).fill(null);
-  dir[sx][sz] = [0, 0];
+  g_pathStamp++;
+  if (g_pathStamp >= 0xFFFFFFFE) {
+    g_pathSeen.fill(0);
+    g_pathStamp = 1;
+  }
 
-  const queue = [[sx, sz]];
-  let head = 0;
-  // 8-directional neighbours; diagonals only allowed when both cardinal
-  // neighbours sharing the corner are open (prevents clipping through walls).
-  const CARD = [[1,0],[-1,0],[0,1],[0,-1]];
-  const DIAG = [[1,1],[1,-1],[-1,1],[-1,-1]];
-  while (head < queue.length) {
-    const [cx, cz] = queue[head++];
-    // cardinal neighbours
-    for (const [ox, oz] of CARD) {
+  let head = 0, tail = 0;
+  const startIdx = _pathIndex(sx, sz);
+  g_pathSeen[startIdx] = g_pathStamp;
+  g_pathStepX[startIdx] = 0;
+  g_pathStepZ[startIdx] = 0;
+  g_pathQueueX[tail] = sx;
+  g_pathQueueZ[tail] = sz;
+  tail++;
+
+  while (head < tail) {
+    const cx = g_pathQueueX[head];
+    const cz = g_pathQueueZ[head];
+    head++;
+
+    for (let i = 0; i < 4; i++) {
+      const ox = i === 0 ? 1 : i === 1 ? -1 : 0;
+      const oz = i === 2 ? 1 : i === 3 ? -1 : 0;
       const nx = cx + ox, nz = cz + oz;
       if (nx < 0 || nx >= MAP_SIZE || nz < 0 || nz >= MAP_SIZE) continue;
-      if (dir[nx][nz] !== null || g_Map[nx][nz] > 0) continue;
-      dir[nx][nz] = [cx - nx, cz - nz];
-      queue.push([nx, nz]);
+      const idx = _pathIndex(nx, nz);
+      if (g_pathSeen[idx] === g_pathStamp || g_Map[nx][nz] > 0) continue;
+      g_pathSeen[idx] = g_pathStamp;
+      g_pathStepX[idx] = cx - nx;
+      g_pathStepZ[idx] = cz - nz;
+      g_pathQueueX[tail] = nx;
+      g_pathQueueZ[tail] = nz;
+      tail++;
     }
-    // diagonal neighbours — only passable if both adjacent cards are open
-    for (const [ox, oz] of DIAG) {
+
+    for (let i = 0; i < 4; i++) {
+      const ox = i < 2 ? 1 : -1;
+      const oz = (i & 1) ? -1 : 1;
       const nx = cx + ox, nz = cz + oz;
       if (nx < 0 || nx >= MAP_SIZE || nz < 0 || nz >= MAP_SIZE) continue;
-      if (dir[nx][nz] !== null || g_Map[nx][nz] > 0) continue;
+      const idx = _pathIndex(nx, nz);
+      if (g_pathSeen[idx] === g_pathStamp || g_Map[nx][nz] > 0) continue;
       if (g_Map[cx + ox][cz] > 0 || g_Map[cx][cz + oz] > 0) continue;
-      dir[nx][nz] = [cx - nx, cz - nz];
-      queue.push([nx, nz]);
+      g_pathSeen[idx] = g_pathStamp;
+      g_pathStepX[idx] = cx - nx;
+      g_pathStepZ[idx] = cz - nz;
+      g_pathQueueX[tail] = nx;
+      g_pathQueueZ[tail] = nz;
+      tail++;
     }
   }
-  g_entity.pathDir = dir;
+  g_pathTargetX = sx;
+  g_pathTargetZ = sz;
+  g_entity.pathDir = g_pathSeen;
+  return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // updateEntity — BFS-driven smooth chase
 // ─────────────────────────────────────────────────────────────────────────────
 function updateEntity(dt) {
-  // Recompute the flow field 8x/sec for fast reactions
+  _ensurePathBuffers();
+  const eye = camera.eye.elements;
+  const playerCellX = Math.floor(eye[0]);
+  const playerCellZ = Math.floor(eye[2]);
   g_entity.pathRecalcTimer -= dt;
-  if (g_entity.pathRecalcTimer <= 0 || !g_entity.pathDir) {
+  if (g_entity.pathRecalcTimer <= 0 || !g_entity.pathDir || playerCellX !== g_pathTargetX || playerCellZ !== g_pathTargetZ) {
     _recomputePath();
-    g_entity.pathRecalcTimer = 0.125;
+    g_entity.pathRecalcTimer = 0.35;
   }
 
-  const eye = camera.eye.elements;
   const los = _hasLineOfSightToPlayer();
   g_entity.hasLOS = los;
 
@@ -186,10 +249,13 @@ function updateEntity(dt) {
   } else {
     const ix = Math.floor(g_entity.x), iz = Math.floor(g_entity.z);
     const inBounds = (ix >= 0 && ix < MAP_SIZE && iz >= 0 && iz < MAP_SIZE);
-    const step = inBounds && g_entity.pathDir ? g_entity.pathDir[ix][iz] : null;
-    if (step && (step[0] !== 0 || step[1] !== 0)) {
-      tgtX = ix + step[0] + 0.5;
-      tgtZ = iz + step[1] + 0.5;
+    const idx = inBounds ? _pathIndex(ix, iz) : -1;
+    const hasStep = idx >= 0 && g_pathSeen[idx] === g_pathStamp;
+    const stepX = hasStep ? g_pathStepX[idx] : 0;
+    const stepZ = hasStep ? g_pathStepZ[idx] : 0;
+    if (stepX !== 0 || stepZ !== 0) {
+      tgtX = ix + stepX + 0.5;
+      tgtZ = iz + stepZ + 0.5;
     } else {
       tgtX = eye[0];
       tgtZ = eye[2];
@@ -249,8 +315,10 @@ function _hasLineOfSightToPlayer() {
   const x0 = g_entity.x,     z0 = g_entity.z;
   const x1 = eye[0],          z1 = eye[2];
   const dx = x1 - x0,         dz = z1 - z0;
-  const dist = Math.sqrt(dx*dx + dz*dz);
-  const steps = Math.ceil(dist / 0.25);
+  const distSq = dx * dx + dz * dz;
+  if (distSq > 24 * 24) return false;
+  const dist = Math.sqrt(distSq);
+  const steps = Math.ceil(dist / 0.5);
   for (let i = 1; i < steps; i++) {
     const t = i / steps;
     const sx = Math.floor(x0 + dx * t);
@@ -288,6 +356,13 @@ function getEntityDist() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const E_MESH_COLOR = [0.06, 0.22, 0.04, 1.0];   // dark fleshy green
+var g_entityWorldMatrix = new Matrix4();
+var g_entityBodyLocalMatrix = new Matrix4();
+var g_entityBodyMatrix = new Matrix4();
+var g_entityChildLocalMatrix = new Matrix4();
+var g_entityChildMatrix = new Matrix4();
+var g_entityFallbackMatrix = new Matrix4();
+const ENTITY_CHILDREN = ['head', 'arm_left', 'arm_right', 'leg_left', 'leg_right'];
 
 function _bindPart(part) {
   const p = g_entityParts[part];
@@ -311,7 +386,7 @@ function _drawMesh(part) {
 // Vertices in the OBJ are Y-up, feet at Y=0 (height ≈ 19.79 OBJ units).
 function _entityWorldMatrix() {
   const yawDeg = g_entity.yaw * (180 / Math.PI);
-  const m = new Matrix4();
+  const m = g_entityWorldMatrix.setIdentity();
   m.translate(g_entity.x, 0.0, g_entity.z);
   m.rotate(yawDeg, 0, 1, 0);
   m.scale(E_SCALE, E_SCALE, E_SCALE);
@@ -319,11 +394,6 @@ function _entityWorldMatrix() {
   m.translate(-E_OBJ_CX, -E_OBJ_CY, -E_OBJ_CZ);
   return m;
 }
-
-// Manual matrix stack — clones via Matrix4 copy constructor for safety
-const _matStack = [];
-function _pushMat(m) { _matStack.push(new Matrix4(m)); }
-function _popMat()   { return _matStack.pop(); }
 
 function _drawEntityHierarchical(seconds) {
   // `seconds` keeps head/body twitching even when stationary (creepier);
@@ -337,29 +407,25 @@ function _drawEntityHierarchical(seconds) {
   gl.uniform4fv(u_baseColor, E_MESH_COLOR);
 
   // ── BODY (root) ─────────────────────────────────────────────────────────
-  const M_body_local = getInterpolatedTransform('body', t);
-  const M_body = new Matrix4(M_world).multiply(M_body_local);
-  _pushMat(M_body);                   // parent for all children
+  const M_body_local = getInterpolatedTransformInto('body', t, g_entityBodyLocalMatrix);
+  const M_body = g_entityBodyMatrix.set(M_world).multiply(M_body_local);
   gl.uniformMatrix4fv(u_ModelMatrix, false, M_body.elements);
   _drawMesh('body');
 
   // ── Children of body ────────────────────────────────────────────────────
-  const children = ['head', 'arm_left', 'arm_right', 'leg_left', 'leg_right'];
-  for (const child of children) {
-    const parent = _matStack[_matStack.length - 1];
-    const M_child_local = getInterpolatedTransform(child, t);
-    const M_child = new Matrix4(parent).multiply(M_child_local);
+  for (const child of ENTITY_CHILDREN) {
+    const M_child_local = getInterpolatedTransformInto(child, t, g_entityChildLocalMatrix);
+    const M_child = g_entityChildMatrix.set(M_body).multiply(M_child_local);
     gl.uniformMatrix4fv(u_ModelMatrix, false, M_child.elements);
     _drawMesh(child);
   }
-  _popMat();
 }
 
 // Single-mesh fallback (used until all 6 part VBOs + anim.json are loaded)
 function _drawEntityFallback() {
   if (!g_entityFallbackBuffer) return;
   const yawDeg = g_entity.yaw * (180 / Math.PI);
-  const m = new Matrix4();
+  const m = g_entityFallbackMatrix.setIdentity();
   m.translate(g_entity.x, 0.0, g_entity.z);
   m.rotate(yawDeg, 0, 1, 0);
   m.scale(E_SCALE, E_SCALE, E_SCALE);

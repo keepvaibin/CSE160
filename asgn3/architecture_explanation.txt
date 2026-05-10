@@ -50,6 +50,37 @@ Core files
   emissive surfaces, flicker, and goop transparency.
 
 
+Asset and model attributions
+----------------------------
+The title screen includes the player-facing credits. The fuller defense notes
+are below so the source and license story is clear during grading.
+
+- Backrooms Bacteria Rigged 3D Model (Unofficial) by spy_dogg/chives1996 on
+  Sketchfab. Unofficial fan-made model based on the Bacteria creature from Kane
+  Pixels' Backrooms series.
+- furniture pack by the soppy prisma models, https://skfb.ly/pInCY, licensed
+  under Creative Commons Attribution 4.0.
+- Chair 3D Model 253 by alexdizz on free3d.com, Personal Use License.
+- High quality grass 3D Model 297 by nevayashka on free3d.com. Category:
+  3D Models / plants / grass / high quality. License shown in the model listing:
+  Personal Use License. The listing description also says commercial use is
+  allowed. Submitted by nevayashka. Date added: Nov 24, 2017. Last update:
+  Nov 20, 2019. Model details from the listing: 2,384 polygons, 2,940 vertices,
+  textures yes, materials no, rigged no, animated no, 3D printable ready no,
+  game-ready low poly no, UV mapped no, unwrapped UVs unknown. Formats/files:
+  OBJ, Cinema 4D, FBX (.obj, .c4d, .fbx), archive name
+  dm0ttlocoglc-2plants_lowhigh.rar. Tags: plants, grass, high, quality.
+  Description: high quality grass models, 1024x1024 texture quality, 2384 poly.
+- Wooden sign 3D Model 2 by kasperserup on free3d.com. Category: 3D Models /
+  accessories / wooden sign. License shown in the model listing: Personal Use
+  License. Submitted by kasperserup. Date added: Jan 10, 2020. Last update:
+  Jan 19, 2020. Model details from the listing: textures yes, materials yes,
+  rigged no, animated no, 3D printable ready no, game-ready low poly no, UV
+  mapped no. Formats/files: OBJ (.obj), 1.3 MB, archive name wooden-sign.zip.
+  Tags: wooden, sign, accessories. Description: wooden sign in OBJ, made in
+  Blender.
+
+
 Important world data structures
 -------------------------------
 The world is grid-based. The same grid coordinates are used for rendering,
@@ -171,10 +202,17 @@ The chunk culling is approximate, not perfect wall occlusion. It uses:
 - side distance from the view direction
 
 This skips chunks that are too far away, behind the player, or far outside the
-forward view area. Normal mode is already fairly tight so the Backrooms does not
-draw too much beyond the fog. Performance mode tightens the distance and side
-cone further. It works well with fog because distant geometry would be mostly
-invisible anyway.
+forward view area. The same culling rules now run in normal mode and performance
+mode. Performance mode does not get a separate culling path; its only visual
+rendering differences are lower backing resolution and tighter fog. This keeps
+behavior predictable while still making both modes cheaper than drawing the
+whole 96x96 Backrooms map.
+
+The goop decals use the same idea. They used to be batched by texture across the
+entire Backrooms level, which meant all goop geometry drew even when only a few
+nearby chunks were visible. They are now split into chunk-local decal batches,
+so drawGoopWorld() skips transparent decal geometry in far or behind-camera
+chunks.
 
 Suburb geometry is batched by texture name instead of Backrooms material group.
 buildSuburbGeometry() creates batches for road, sidewalk, grass, house wall,
@@ -187,19 +225,20 @@ main.js loads textures into WebGL texture units. For safety, every texture first
 gets a procedural fallback canvas. When the real image loads, it replaces the
 fallback.
 
-The current texture filtering is:
+The current texture filtering is intentionally cheap:
 
-- Power-of-two textures use LINEAR_MIPMAP_LINEAR for minification.
-- Magnification uses LINEAR.
-- gl.generateMipmap() builds mipmap levels.
-- If anisotropic filtering is available, it is enabled up to 4x.
-- Non-power-of-two textures use LINEAR and CLAMP_TO_EDGE because WebGL 1 cannot
-  safely repeat/mipmap those textures.
+- Minification uses NEAREST.
+- Magnification uses NEAREST.
+- Power-of-two textures can still use REPEAT wrapping.
+- Non-power-of-two textures use CLAMP_TO_EDGE because WebGL 1 requires it.
+- gl.generateMipmap() is not called.
+- Anisotropic filtering is not requested.
 
-This was changed because nearest-neighbor sampling shimmered badly on long
-floors and walls. Mipmaps give the GPU smaller prefiltered texture versions for
-distant surfaces. Bilinear filtering smooths between texels. Anisotropic
-filtering improves texture quality when a surface is viewed at a shallow angle.
+This was changed during the final performance audit. Mipmaps, bilinear/trilinear
+filtering, and anisotropic filtering can improve texture quality, but they add
+texture setup work and can add sampling cost. The game now chooses consistent
+nearest-neighbor sampling for both normal and performance mode so performance
+mode remains only resolution plus fog, not a separate texture-quality mode.
 
 
 OBJ loader
@@ -289,7 +328,7 @@ a hierarchy:
 
 animSystem.js loads anim.json. Each animation node has a pivot and keyframes.
 For the current time, it finds the two surrounding keyframes, linearly
-interpolates translation/rotation, and creates a Matrix4 transform around the
+interpolates translation/rotation, and writes a Matrix4 transform around the
 pivot:
 
   translate -> move to pivot -> rotate -> move back from pivot
@@ -299,23 +338,37 @@ then draws child parts using body matrix multiplied by each child animation
 matrix. That satisfies the hierarchical animated character requirement because
 the model is not just one static mesh.
 
+The final performance audit changed the animation path to reuse Matrix4 objects
+instead of allocating new matrices for every body part every frame.
+animSystem.js now has getInterpolatedTransformInto(), which writes into an
+existing matrix. entity.js keeps reusable world/body/child/fallback matrices.
+The Matrix4 rotate helper was also changed to reuse one temporary rotation
+matrix instead of allocating a new Matrix4 on every rotation call.
+
 
 Entity AI and chase behavior
 ----------------------------
 The entity does not move straight through walls. It uses grid-aware pathfinding.
 
-- Every short interval, entity.js recomputes a breadth-first search from the
-  player's grid cell.
-- The result is a flow field called nextDir.
+- entity.js recomputes a breadth-first search from the player's grid cell when
+  the player enters a new cell or the path timer expires.
+- The result is a flow field stored in reusable typed arrays.
 - From each reachable cell, nextDir tells the entity which direction leads
   toward the player.
 - The entity follows that flow field through corridors.
-- A line-of-sight raycast checks whether walls block view of the player.
+- A bounded line-of-sight raycast checks whether walls block view of the player.
 - If the player is visible and close enough, the entity enters stronger chase
   behavior and audio becomes more aggressive.
 
 This is enough for a grid maze and is easier to explain than a full navigation
 mesh. It also means the entity respects the same walls as the player.
+
+The important performance detail is that the old pathfinder allocated nested
+JavaScript arrays and many tiny [dx,dz] arrays whenever it recomputed the flow
+field. On a 96x96 map that can cause garbage collection spikes. The current
+version reuses Int8Array, Uint32Array, and Int16Array buffers for step vectors,
+visited stamps, and BFS queues. Recomputing the path now does CPU work but does
+not create thousands of short-lived objects.
 
 
 Level loading
@@ -475,9 +528,14 @@ This section lists the player-facing interactions and how they are implemented.
 
 2. Fullscreen button
   setupFullscreen() toggles tab fullscreen, not browser-native fullscreen.
-  The body gets a game-fullscreen class, the canvas/container fill the browser
-  viewport, applyCanvasRenderSize() resizes the WebGL backing store,
-  gl.viewport() is updated, and the camera projection matrix is refreshed.
+  In normal mode, the game viewport sits inside a Windows 95/MS Paint-style
+  frame with a blue title bar, menu bar, gray bevels, and inset canvas panel.
+  This styling matches the parent CSE160 home page and the earlier assignment
+  HTML pages. In fullscreen, the body gets a game-fullscreen class, the title
+  bar/menu bar are hidden, the frame border/shadow are removed, the game
+  viewport/canvas fill the browser viewport, applyCanvasRenderSize() resizes the
+  WebGL backing store, gl.viewport() is updated, and the camera projection
+  matrix is refreshed.
   This avoids the browser stealing Escape to leave native fullscreen, so Escape
   can keep working as the game pause key.
 
@@ -500,8 +558,12 @@ This section lists the player-facing interactions and how they are implemented.
 
 6. Pointer lock and mouse look
    The canvas requests pointer lock after the title screen. Mouse movement is
-   accumulated into pending deltas and applied once per frame in processInput(),
-   which reduces jitter from high-polling-rate mice.
+  accumulated into pending deltas and applied once per frame in processInput().
+  Each browser mouse event is clamped, the pending queue is clamped, and only a
+  bounded amount of mouse movement is drained per rendered frame. Pending mouse
+  deltas are reset on pointer-lock changes, blur, and tab visibility changes.
+  This prevents a hitch or pointer-lock transition from dumping a huge mouse
+  delta into one frame and snapping the camera.
 
 7. Dialogue boxes
    VN dialogue is HTML/CSS over the canvas. Clicking or pressing E/Enter hides
@@ -639,8 +701,8 @@ The speedrun timer is separate from the round countdown timer.
 - g_speedrunTime resets to 0 when the player presses ENTER on the title screen.
 - tick() increments g_speedrunTime by dt only while the game has started and
   g_speedrunFinished is false.
-- updateHUD() updates the #speedrunTimer text every frame, but CSS hides it
-  until the run ends.
+- updateHUD() does not continuously rewrite the hidden speedrun timer during
+  play. The hidden timer is formatted when the run finishes.
 - triggerWin() sets g_speedrunFinished = true, formats the time with
   formatSpeedrunTime(), writes it to #finalRunTime, and reveals the HUD label as
   "TIME mm:ss.cc".
@@ -659,11 +721,15 @@ the visible canvas size. The CSS size stays the same, but fewer pixels are
 shaded. The canvas uses pixelated upscaling and the FPS text shows the current
 render size so the setting is visually obvious.
 
-Performance mode also changes Backrooms visibility. Normal Backrooms fog is near
-1.8 and far 14.0. Performance-mode Backrooms fog is near 1.0 and far 8.5, so
-less distant geometry is visible. The chunk culling distance and side cone are
-tightened to match the shorter fog, which means renderWorldChunks() skips more
-8x8 chunks before issuing draw calls.
+The important rule after the final audit is that performance mode only changes
+resolution and fog. It does not use a different chunk-culling algorithm, a
+different prop-culling algorithm, or a different texture filtering path. Normal
+mode and performance mode share the same optimized renderer.
+
+Performance mode changes Backrooms fog. Normal Backrooms fog is near 1.8 and far
+14.0. Performance-mode Backrooms fog is near 1.0 and far 8.5, so less distant
+geometry is visually exposed. The shared culling code is still used in both
+modes.
 
 Performance mode also keeps the suburb level foggier than normal mode. The
 suburb uses near 4.0 / far 16.0 normally, and near 2.5 / far 10.0 in performance
@@ -674,17 +740,37 @@ Other performance decisions:
 - static world faces are batched into vertex buffer objects
 - hidden wall faces are never emitted into buffers
 - Backrooms geometry is split into 8x8 chunks
-- chunks outside the distance/view range are skipped, with a tighter range in
-  performance mode
+- chunks outside the shared distance/view range are skipped in both modes
+- goop decals are split into chunk-local transparent batches and culled with the
+  same chunk visibility test as world geometry
+- Backrooms furniture and item cubes are skipped when outside the same shared
+  point/chunk visibility range
 - the Backrooms obstruction pass only protects a small spawn/exit breathing
   pocket instead of entire rooms, so long sightlines are broken up more often
 - HUD DOM writes are skipped unless the displayed value actually changes, which
   reduces layout/style churn and helps frame pacing feel smoother
+- HUD bar width transitions were removed so stamina/proximity updates do not
+  ask the browser to animate layout-affecting width changes during gameplay
 - repeated furniture and prop draws reuse Matrix4 objects inside their loops,
   reducing garbage collection spikes
+- Matrix4.rotate() reuses a temporary rotation matrix instead of allocating one
+  on each call
+- entity pathfinding reuses typed arrays for the flow field and queue instead
+  of allocating nested arrays every recalculation
+- mouse-look deltas are clamped and drained across frames so hitches do not
+  cause camera snaps
+- the FPS display is derived from smoothed frame time and shows milliseconds,
+  e.g. "FPS: 239 (4.2ms)", so the displayed FPS and frame time agree
 - the entity mesh is pre-baked into entity_model.js
 - smaller props/furniture use runtime OBJ parsing
-- mipmaps reduce texture shimmer and can reduce distant texture sampling cost
+- texture sampling uses NEAREST with no mipmaps or anisotropic filtering
+
+Browser audit result after these changes: in the Backrooms test view, the map
+had 144 world chunks but only 9 visible world chunks. Goop decals were split into
+chunk-local batches, and only a few goop chunks were visible from the spawn test
+view. Texture min/mag filters both reported NEAREST. The measured frame interval
+was about 4.17ms with about 0.09ms standard deviation in the test browser, and
+the FPS HUD showed the same frame-time basis.
 
 This is not portal rendering or perfect occlusion culling. It is hidden-face
 culling plus conservative distance/view chunk culling, which is appropriate for
@@ -699,8 +785,9 @@ the lit surface color into u_fogColor between u_fogNear and u_fogFar.
 - Suburb fog: near 4.0, far 16.0, color matches the blue sky.
 - Suburb performance fog: near 2.5, far 10.0, same blue sky color.
 - Backrooms fog: near 1.8, far 14.0, warm tan color.
-- Backrooms performance fog: near 1.0, far 8.5, same warm tan color, used to
-  hide more distant chunks and make culling more aggressive.
+- Backrooms performance fog: near 1.0, far 8.5, same warm tan color. It makes
+  the Backrooms visually tighter, while culling itself stays shared between
+  normal and performance mode.
 
 Lights are uploaded from g_LightPositions into a uniform array. The shader uses
 up to 8 active point lights. Fluorescent ceiling light tiles are drawn as
@@ -730,6 +817,73 @@ Rubric talking points
   footsteps, screams, and win/lose screens implement the horror theme.
 
 
+Assignment 3 requirements checklist
+-----------------------------------
+This project satisfies the Assignment 3 requirements as follows:
+
+- Local server: the project is meant to be run through a local HTTP server such
+  as VS Code Live Preview/Live Server. This is required because textures, OBJ
+  files, audio, and JSON animation data are loaded from files through browser
+  fetch/image/audio APIs.
+- First-person camera: camera.js defines the Camera class with field of view,
+  eye/at/up vectors, a view matrix, and a projection matrix. The player starts
+  at the level spawn position assigned by world.js.
+- Perspective camera: shaders.js uses u_ProjectionMatrix, u_ViewMatrix, and
+  u_ModelMatrix in the vertex shader. camera.updateProjectionMatrix() calls
+  Matrix4.setPerspective().
+- 32x32x4 voxel world: Act 1 is a 32x32 map, and the Backrooms is 96x96. Wall
+  height values are stored as voxel heights in g_Map[x][z], with full walls at
+  height 4.
+- World created at startup: main() calls initWorldBuffers(), initSingleCubeBuffer(),
+  and loadLevel(1), which builds the required 32x32 suburb world immediately.
+  The Backrooms is generated later as a second level.
+- Hardcoded JavaScript 2D array: map_suburbs in world.js is a hardcoded 32x32
+  JavaScript array. Each number represents the wall/block height at that cell.
+- Ground: floor/ground is generated from textured cube top faces batched across
+  the grid. This is equivalent to using the top of flattened cubes/large square
+  ground tiles and gives the entire world walkable textured ground.
+- Walls: walls are created from cube faces generated from g_Map heights. The
+  engine supports 1, 2, 3, and 4 unit heights. Hidden interior faces are skipped
+  before the vertex buffers are uploaded.
+- Textured cube faces: wall, floor/ceiling, light, door, suburb ground, house,
+  fence, dirt, grass, goop, and sign surfaces use texture coordinates and
+  texture samplers.
+- Sky: drawSkybox() renders a very large cube centered on the camera with a blue
+  sky color/clear color in the suburb, satisfying the large sky-cube requirement.
+- Keyboard movement: processInput() supports W forward, A left, S backward, D
+  right, plus sprinting with Shift. Movement uses wall collision and sliding.
+- Q/E rotation: processInput() supports Q to turn left and E to turn right.
+  These keys now work during gameplay as keyboard rotation controls even though
+  mouse look is also available.
+- Mouse rotation: setupInput() uses pointer-lock mouse movement. Mouse deltas
+  are clamped and applied in processInput() for first-person look.
+- Multiple textures: the shader has multiple samplers and u_whichTexture selects
+  which texture group to use for each draw. The game uses more than one texture
+  throughout both levels.
+- Texture plus color together: u_texColorWeight blends between u_baseColor and
+  sampled texture color. The sky and some props can use solid color while walls
+  and level surfaces use textures.
+- Add/delete blocks: the suburb hedge task is the Simple Minecraft mechanic.
+  Right mouse removes hedge block height from the target cell, and left mouse
+  places collected hedge blocks back into target cells.
+- Animal/creature: the Backrooms entity is a moving animated creature. It is
+  uploaded as body-part vertex buffer objects and drawn hierarchically.
+- OBJ loader or terrain: objLoader.js parses OBJ files at runtime. It is used
+  for furniture, fences, weeds/grass, and the sign model. This satisfies the OBJ
+  loader extension requirement.
+- Simple story/game: gameState.js implements a two-act story: yard chores,
+  falling into the Backrooms, reading the warning sign, being hunted, and
+  escaping through the exit door before the timer loops and the entity speeds up.
+- Performance: geometry batching, hidden-face culling, chunk culling, decal
+  culling, reusable matrices, typed-array pathfinding, and lower-resolution
+  performance mode keep the full 32x32+ world well above the 10 FPS rubric
+  target in browser testing.
+- Wow: the submission goes beyond the basic rubric with a 96x96 procedural
+  Backrooms, fog, lighting, flickering fluorescent lights, audio, speedrun
+  timer, OBJ props, a hierarchical animated enemy, narrative UI, tab fullscreen,
+  and a Windows 95/MS Paint-style game frame.
+
+
 Important defenses if asked
 ---------------------------
 What is a vertex buffer object?
@@ -754,8 +908,10 @@ timers as needed, rebuilds world buffers, rebuilds goop decals, uploads lights,
 changes fog, toggles CSS classes, and adjusts ambience for the level.
 
 How does the entity chase work?
-It recomputes a breadth-first-search flow field from the player's cell and
-follows nextDir through corridors. It also raycasts for line of sight to trigger
+It recomputes a breadth-first-search flow field from the player's cell when the
+player changes cells or the path timer expires. The flow field lives in reusable
+typed arrays, and the entity follows the stored step directions through
+corridors. It also runs a bounded raycast for line of sight to trigger
 burst/chase behavior and audio changes.
 
 Why is performance mode implemented as lower resolution instead of an FPS cap?
@@ -763,9 +919,11 @@ The problem was high pixel shading/fill-rate cost, especially on integrated GPUs
 and high-refresh displays. Lowering render resolution reduces shaded pixels while
 keeping input and animation as responsive as the browser can provide.
 
-Why are mipmaps used?
-Mipmaps reduce shimmer and crawling on distant/angled textures by letting the GPU
-sample prefiltered smaller versions of each texture.
+Why are mipmaps not used now?
+The final performance audit prioritized steadier frame time over texture
+smoothness. Textures now use NEAREST sampling without generated mipmaps or
+anisotropic filtering, which avoids mipmap generation work and keeps texture
+sampling simple in both normal and performance mode.
 
 What is not implemented?
 The project does not use full portal occlusion culling, skeletal animation,

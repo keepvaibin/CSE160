@@ -79,6 +79,12 @@ var g_worldBuffers    = [null, null, null, null];
 var g_worldVertCounts = [0, 0, 0, 0];
 const WORLD_CHUNK_SIZE = 8;
 var g_worldChunks = [];
+var g_worldIdentityMatrix = null;
+
+function _worldIdentity() {
+  if (!g_worldIdentityMatrix) g_worldIdentityMatrix = new Matrix4();
+  return g_worldIdentityMatrix.setIdentity();
+}
 
 // Hardcoded 32×32 Level 1 layout for the lab spec.  Rows are z, columns are x.
 // Values are visible cube heights: 0=open, 1=short block, 2=medium, 3=tall, 4=full wall.
@@ -731,6 +737,7 @@ function loadLevel(levelID) {
 
   if (typeof g_timer !== 'undefined') g_timer = ROUND_SECONDS;
   if (typeof g_entitySpeedMult !== 'undefined' && levelID === LEVEL_BACKROOMS) g_entitySpeedMult = 1.0;
+  if (typeof resetEntityPath === 'function') resetEntityPath();
 
   buildWorldGeometry();
   if (levelID === LEVEL_BACKROOMS) {
@@ -762,8 +769,8 @@ function loadLevel(levelID) {
       if (typeof applyLevelFogSettings === 'function') {
         applyLevelFogSettings();
       } else {
-        if (u_fogNear) gl.uniform1f(u_fogNear, 2.5);
-        if (u_fogFar)  gl.uniform1f(u_fogFar,  20.0);
+        if (u_fogNear) gl.uniform1f(u_fogNear, 1.8);
+        if (u_fogFar)  gl.uniform1f(u_fogFar,  14.0);
         if (u_fogColor) gl.uniform3f(u_fogColor, FOG_R, FOG_G, FOG_B);
       }
       document.body.classList.remove('level-suburbs');
@@ -958,7 +965,7 @@ function buildSuburbGeometry() {
 
 function renderSuburbWorld() {
   const STRIDE = 32;
-  const identity = new Matrix4();
+  const identity = _worldIdentity();
   gl.uniformMatrix4fv(u_ModelMatrix, false, identity.elements);
   gl.uniform1f(u_texColorWeight, 1.0);
   gl.uniform1i(u_whichTexture, 5);
@@ -1090,7 +1097,7 @@ function renderWorld() {
   }
 
   const STRIDE   = 32;
-  const identity = new Matrix4();
+  const identity = _worldIdentity();
   gl.uniformMatrix4fv(u_ModelMatrix, false, identity.elements);
   gl.uniform1f(u_texColorWeight, 1.0);
 
@@ -1115,8 +1122,7 @@ function isWorldChunkVisible(chunk) {
   const e = camera.eye.elements;
   const dx = chunk.centerX - e[0];
   const dz = chunk.centerZ - e[2];
-  const perfMode = (typeof g_performanceMode !== 'undefined' && g_performanceMode);
-  const maxDist = perfMode ? 9.0 : 18.0;
+  const maxDist = 17.0;
   const distLimit = maxDist + chunk.radius;
   if (dx * dx + dz * dz > distLimit * distLimit) return false;
 
@@ -1125,15 +1131,13 @@ function isWorldChunkVisible(chunk) {
   if (forward < -chunk.radius - 2.0) return false;
 
   const side = Math.abs(dx * fwd[2] - dz * fwd[0]);
-  const sideLimit = perfMode
-    ? Math.max(4.0, forward * 0.52 + chunk.radius + 2.0)
-    : Math.max(6.0, forward * 0.82 + chunk.radius + 3.5);
+  const sideLimit = Math.max(5.5, forward * 0.74 + chunk.radius + 3.0);
   return side <= sideLimit;
 }
 
 function renderWorldChunks() {
   const STRIDE = 32;
-  const identity = new Matrix4();
+  const identity = _worldIdentity();
   gl.uniformMatrix4fv(u_ModelMatrix, false, identity.elements);
   gl.uniform1f(u_texColorWeight, 1.0);
 

@@ -15,7 +15,89 @@
       overflow: hidden;
       font-family: 'Courier New', monospace;
     }
-    #container { position: relative; }
+    #container {
+      position: relative;
+      background: #d4d0c8;
+      border: 2px solid #808080;
+      box-shadow: inset 1px 1px 0 #ffffff, inset -1px -1px 0 #404040, 4px 4px 0 #000000;
+      font-family: Tahoma, "MS Sans Serif", sans-serif;
+      color: #000;
+    }
+    .win95-titlebar {
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 3px 4px 3px 6px;
+      background: linear-gradient(to right, #000080, #1084d0);
+      color: #ffffff;
+      font: 700 12px Tahoma, "MS Sans Serif", sans-serif;
+      user-select: none;
+    }
+    .win95-title-left {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .win95-icon {
+      width: 16px;
+      height: 16px;
+      border: 1px solid #404040;
+      background:
+        linear-gradient(#fffb9b 0 0) 3px 3px / 10px 2px no-repeat,
+        linear-gradient(#fffb9b 0 0) 3px 7px / 10px 2px no-repeat,
+        linear-gradient(#fffb9b 0 0) 3px 11px / 10px 2px no-repeat,
+        #d4d0c8;
+      box-shadow: inset 1px 1px 0 #ffffff, inset -1px -1px 0 #808080;
+      flex: 0 0 auto;
+    }
+    .win95-title-buttons {
+      display: flex;
+      gap: 2px;
+    }
+    .win95-title-button {
+      width: 16px;
+      height: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      border: 1px solid #808080;
+      background: #d4d0c8;
+      color: #000;
+      box-shadow: inset 1px 1px 0 #ffffff, inset -1px -1px 0 #404040;
+      font: 700 9px Tahoma, "MS Sans Serif", sans-serif;
+      line-height: 1;
+    }
+    .win95-menubar {
+      display: flex;
+      gap: 2px;
+      height: 22px;
+      align-items: center;
+      padding: 2px 5px;
+      border-bottom: 1px solid #808080;
+      background: #d4d0c8;
+      font: 12px Tahoma, "MS Sans Serif", sans-serif;
+    }
+    .win95-menu-item {
+      padding: 2px 8px;
+    }
+    .win95-menu-item:hover {
+      background: #000080;
+      color: #fff;
+    }
+    #gameViewport {
+      box-sizing: content-box;
+      position: relative;
+      width: 800px;
+      height: 600px;
+      margin: 4px;
+      overflow: hidden;
+      background: #000;
+      border: 2px solid #808080;
+      box-shadow: inset 1px 1px 0 #404040, inset -1px -1px 0 #ffffff;
+    }
     #webgl { display: block; cursor: crosshair; }
 
     /* ── HUD base ── */
@@ -100,7 +182,7 @@
       height: 100%;
       background: #4aff60;
       width: 100%;
-      transition: width 0.1s, background 0.25s;
+      transition: background 0.25s;
     }
 
     /* Sprint stamina */
@@ -118,7 +200,7 @@
       height: 100%;
       background: #5ec8ff;
       width: 100%;
-      transition: width 0.05s linear, background 0.25s;
+      transition: background 0.25s;
     }
 
     #controls {
@@ -310,8 +392,28 @@
 </head>
 <body>
   <div id="container">
-    <canvas id="webgl" width="800" height="600"></canvas>
-    <div id="hud">
+    <div class="win95-titlebar" aria-hidden="true">
+      <div class="win95-title-left">
+        <span class="win95-icon"></span>
+        <span>The Backrooms - Paint</span>
+      </div>
+      <div class="win95-title-buttons">
+        <span class="win95-title-button">_</span>
+        <span class="win95-title-button">&#9633;</span>
+        <span class="win95-title-button">&#215;</span>
+      </div>
+    </div>
+    <div class="win95-menubar" aria-hidden="true">
+      <span class="win95-menu-item">File</span>
+      <span class="win95-menu-item">Edit</span>
+      <span class="win95-menu-item">View</span>
+      <span class="win95-menu-item">Image</span>
+      <span class="win95-menu-item">Options</span>
+      <span class="win95-menu-item">Help</span>
+    </div>
+    <div id="gameViewport">
+      <canvas id="webgl" width="800" height="600"></canvas>
+      <div id="hud">
       <div id="fps">FPS: --</div>
       <div id="objectiveHUD">Objective: Tend to your garden</div>
       <div id="speedrunTimer">RUN 00:00.00</div>
@@ -331,22 +433,22 @@
         Click to enter
         <small>Esc to release mouse</small>
       </div>
-    </div>
+      </div>
 
     <!-- Full-screen overlays -->
-    <div id="jumpscareOverlay" class="overlay"></div>
-    <div id="loseScreen" class="overlay">
+      <div id="jumpscareOverlay" class="overlay"></div>
+      <div id="loseScreen" class="overlay">
       <h1>IT GOT YOU</h1>
       <p>You heard it. You felt it. Then nothing.</p>
       <p style="margin-top:28px;color:#444;font-size:11px;">Refresh to try again</p>
-    </div>
-    <div id="winScreen" class="overlay">
+      </div>
+      <div id="winScreen" class="overlay">
       <h1>YOU ESCAPED</h1>
       <p>The door slammed behind you. You're out.</p>
       <p id="finalRunTime">Your time was 00:00.00.</p>
       <p style="margin-top:28px;color:#555;font-size:11px;">Refresh to play again</p>
-    </div>
-    <div id="pauseScreen" class="overlay">
+      </div>
+      <div id="pauseScreen" class="overlay">
       <h1>PAUSED</h1>
       <div class="pauseMenu">
         <div class="pauseRow">
@@ -368,42 +470,43 @@
         </div>
       </div>
       <p>Press ESC or click RESUME to continue.</p>
-    </div>
-    <div id="roundBanner"></div>
+      </div>
+      <div id="roundBanner"></div>
 
     <!-- Narrative UI layer: Act 1 tutorial, VN dialogue, inventory, sign modal -->
-    <div id="fadeOverlay" class="active">
+      <div id="fadeOverlay" class="active">
       <div id="fadeText">after a long day of work...</div>
-    </div>
+      </div>
 
-    <div id="controlsToast">
+      <div id="controlsToast">
       <div class="toastTitle">CONTROLS</div>
       <div class="toastBody">
         <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move &nbsp;|&nbsp;
         <kbd>SHIFT</kbd> sprint &nbsp;|&nbsp;
         mouse look &nbsp;|&nbsp; <kbd>LMB</kbd> interact
       </div>
-    </div>
+      </div>
 
-    <div id="vnBox">
+      <div id="vnBox">
       <div id="vnAuthor">ME</div>
       <div id="vnText"></div>
       <div id="vnContinue">CLICK / E / ENTER TO CONTINUE</div>
-    </div>
+      </div>
 
-    <div id="inventorySlot">
+      <div id="inventorySlot">
       <div id="invIcon"></div>
       <div id="invItemName"></div>
       <div id="invUseCount"></div>
-    </div>
+      </div>
 
-    <div id="signPopup">
+      <div id="signPopup">
       <div id="signWrapper">
         <div id="signCard">
           <div id="signText">GET OUT OF HERE,
 HE FOLLOWS YOU EVERYWHERE</div>
         </div>
         <button id="signCloseBtn" type="button">CLOSE</button>
+      </div>
       </div>
     </div>
 
@@ -444,6 +547,8 @@ HE FOLLOWS YOU EVERYWHERE</div>
         "Chair 3D Model 253" by alexdizz on free3d.com —
         <a href="https://free3d.com/3d-model/chair-255345.html" target="_blank" rel="noopener">https://free3d.com/3d-model/chair-255345.html</a>
         (Personal Use License).<br>
+        "High quality grass 3D Model 297" by nevayashka on free3d.com — Personal Use License; OBJ/C4D/FBX source; commercial use allowed by model description.<br>
+        "Wooden sign 3D Model 2" by kasperserup on free3d.com — Personal Use License; OBJ source made in Blender.<br>
         <span style="opacity:0.7">Find the exit door before time runs out. Something is hunting you.</span>
       </div>
     </div>

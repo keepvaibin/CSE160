@@ -74,8 +74,9 @@ function _findBracket(keyframes, t) {
 }
 
 // ── Public: per-node interpolated transform ───────────────────────────────
-function getInterpolatedTransform(nodeName, currentTime) {
-  const m = new Matrix4();   // identity
+function getInterpolatedTransformInto(nodeName, currentTime, outMatrix) {
+  const m = outMatrix || new Matrix4();
+  m.setIdentity();
   if (!g_animLoaded || !g_animData) return m;
 
   const node = g_animData.nodes[nodeName];
@@ -98,4 +99,8 @@ function getInterpolatedTransform(nodeName, currentTime) {
   m.rotate(rot[0], 1, 0, 0);
   m.translate(-p[0], -p[1], -p[2]);
   return m;
+}
+
+function getInterpolatedTransform(nodeName, currentTime) {
+  return getInterpolatedTransformInto(nodeName, currentTime, new Matrix4());
 }

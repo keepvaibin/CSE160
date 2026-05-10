@@ -32,7 +32,9 @@ var u_Sampler0, u_Sampler1, u_Sampler2, u_Sampler3, u_Sampler5;
 var camera;
 var g_keys     = {};
 var g_ignoreNextMouseMove = false;
-const MOUSE_DELTA_CAP = 45;
+const MOUSE_EVENT_DELTA_CAP = 20;
+const MOUSE_FRAME_DELTA_CAP = 28;
+const MOUSE_PENDING_DELTA_CAP = 56;
 var g_pendingMouseX = 0, g_pendingMouseY = 0;
 // length of a single round before the entity speeds up and the timer resets.
 // (was 180 = 3 min; using 120 to match the user's "2 minutes" wording.)
@@ -55,7 +57,6 @@ const BACKROOMS_FOG_NEAR = 1.8;
 const BACKROOMS_FOG_FAR = 14.0;
 const BACKROOMS_PERF_FOG_NEAR = 1.0;
 const BACKROOMS_PERF_FOG_FAR = 8.5;
-var g_anisoExt = null;
 var g_SuburbTexObjs = {};      // dynamic sampler5 textures for Level 1
 var g_LevelModelMeshes = {};   // OBJ meshes for Level 1 models (fence)
 var g_suppressPointerPause = false; // narrative overlays can release pointer lock
@@ -88,7 +89,7 @@ var g_started = false;
 // Timing
 var g_lastFrameMs = 0;
 var g_lastFpsMs   = 0;
-var g_frameCount  = 0;
+var g_frameMsSmoothed = 16.7;
 var g_seconds     = 0;
 
 // Audio
@@ -141,6 +142,17 @@ const ENABLE_chair1 = true;
 const ENABLE_chair2 = true;
 const ENABLE_chair3 = true;
 const ENABLE_chair4 = true;
+const FURNITURE_ENABLED = {
+  chair: ENABLE_chair,
+  chair1: ENABLE_chair1,
+  chair2: ENABLE_chair2,
+  chair3: ENABLE_chair3,
+  chair4: ENABLE_chair4,
+};
+
+function isFurnitureKindEnabled(kind) {
+  return FURNITURE_ENABLED[kind] !== false;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // goop tile settings
@@ -158,9 +170,6 @@ function main() {
 
   gl = canvas.getContext('webgl');
   if (!gl) { console.error('WebGL not supported'); return; }
-  g_anisoExt = gl.getExtension('EXT_texture_filter_anisotropic') ||
-               gl.getExtension('WEBKIT_EXT_texture_filter_anisotropic') ||
-               gl.getExtension('MOZ_EXT_texture_filter_anisotropic');
 
   if (!initShaders(gl, VSHADER_SOURCE, FSHADER_SOURCE)) {
     console.error('Shader compile failed'); return;
@@ -257,7 +266,8 @@ function main() {
 function tick(timestamp) {
   if (g_gameOver || g_gameWon) return;
 
-  const dt = Math.min((timestamp - g_lastFrameMs) / 1000, 0.05);
+  const frameMs = g_lastFrameMs > 0 ? (timestamp - g_lastFrameMs) : 0;
+  const dt = Math.min(frameMs / 1000, 1 / 30);
   g_lastFrameMs = timestamp;
 
   // when paused we still render the last frame and update fps, but skip
@@ -295,7 +305,7 @@ function tick(timestamp) {
 
   renderScene();
   updateHUD();
-  updateFps(timestamp);
+  updateFps(timestamp, frameMs);
   requestAnimationFrame(tick);
 }
 
@@ -322,7 +332,8 @@ function renderScene() {
 function drawSkybox() {
   if (!g_singleCubeBuffer) return;
   const e = camera.eye.elements;
-  const m = new Matrix4();
+  if (!drawSkybox._matrix) drawSkybox._matrix = new Matrix4();
+  const m = drawSkybox._matrix.setIdentity();
   m.translate(e[0], e[1], e[2]);
   m.scale(220, 220, 220);
   gl.depthMask(false);
@@ -448,10 +459,23 @@ const FURNITURE_DEFS = {
 //   { buffer, vertCount, scale, offsetX, offsetY, offsetZ }
 var g_furnitureMeshes = {};
 
+function isDrawPointVisible(x, z, radius) {
+  if (typeof g_currentLevel === 'undefined' || typeof LEVEL_BACKROOMS === 'undefined' || g_currentLevel !== LEVEL_BACKROOMS) return true;
+  if (typeof isWorldChunkVisible === 'function') {
+    return isWorldChunkVisible({ centerX: x, centerZ: z, radius: radius || 1.0 });
+  }
+  if (!camera) return true;
+  const e = camera.eye.elements;
+  const dx = x - e[0], dz = z - e[2];
+  const limit = 18.0 + (radius || 1.0);
+  return dx * dx + dz * dz <= limit * limit;
+}
+
 // goop tile decals
 var g_goopFloorCells = new Map(); // "x,z" -> texName
 var g_goopWallFaces  = new Map(); // "wx,wz,face,y" -> texName
 var g_goopBatches    = [];        // [{texName, buffer, vertCount}]
+var g_goopChunks     = [];        // [{centerX, centerZ, radius, batches}]
 var u_Sampler4 = null;    // uniform location for goop texture
 var g_GoopTexObjs = {};   // filename -> WebGL texture object
 
@@ -486,11 +510,7 @@ const GOOP_FLOOR_DECORS = [
 function loadFurnitureMeshes() {
   for (const kind of Object.keys(FURNITURE_DEFS)) {
     // skip kinds whose toggle is false
-    const flag = 'ENABLE_' + kind;
-    if (typeof window[flag] !== 'undefined' && !window[flag]) continue;
-    // also skip if top-level const says disabled (const not on window in strict mode,
-    // so we eval it safely — the flag names are hard-coded so this is safe)
-    try { if (eval(flag) === false) continue; } catch(_) {}
+    if (!isFurnitureKindEnabled(kind)) continue;
     const def = FURNITURE_DEFS[kind];
     fetch(def.file)
       .then(r => r.ok ? r.text() : Promise.reject(r.status))
@@ -532,10 +552,12 @@ function loadFurnitureMeshes() {
 function drawFurniture() {
   if (typeof g_FurnitureSlots === 'undefined' || g_FurnitureSlots.length === 0) return;
   const stride = 32;
-  const m = new Matrix4();
+  if (!drawFurniture._matrix) drawFurniture._matrix = new Matrix4();
+  const m = drawFurniture._matrix;
   for (const slot of g_FurnitureSlots) {
     // skip if this kind was disabled
-    try { if (eval('ENABLE_' + slot.kind) === false) continue; } catch(_) {}
+    if (!isFurnitureKindEnabled(slot.kind)) continue;
+    if (!isDrawPointVisible(slot.x, slot.z, 1.2)) continue;
     const mesh = g_furnitureMeshes[slot.kind];
     if (!mesh) continue;
     const def = FURNITURE_DEFS[slot.kind];
@@ -631,7 +653,8 @@ function loadLevelModelMeshes() {
 function drawLevelModels() {
   if (!g_LevelModelSlots || g_LevelModelSlots.length === 0) return;
   const stride = 32;
-  const m = new Matrix4();
+  if (!drawLevelModels._matrix) drawLevelModels._matrix = new Matrix4();
+  const m = drawLevelModels._matrix;
   for (const slot of g_LevelModelSlots) {
     const mesh = g_LevelModelMeshes[slot.kind];
     if (!mesh) continue;
@@ -711,8 +734,10 @@ function drawGardenHighlight() {
     { x: minX + 0.02, y: 0.035, z: cz, sx: 0.055, sy: 0.035, sz: length },
     { x: maxX + 0.98, y: 0.035, z: cz, sx: 0.055, sy: 0.035, sz: length },
   ];
+  if (!drawGardenHighlight._matrix) drawGardenHighlight._matrix = new Matrix4();
+  const m = drawGardenHighlight._matrix;
   for (const strip of strips) {
-    const m = new Matrix4();
+    m.setIdentity();
     m.translate(strip.x, strip.y, strip.z);
     m.scale(strip.sx, strip.sy, strip.sz);
     gl.uniformMatrix4fv(u_ModelMatrix, false, m.elements);
@@ -735,7 +760,10 @@ function drawLevelItems() {
   gl.uniform4f(u_baseColor, 1.0, 1.0, 1.0, 1.0);
   gl.uniform1i(u_emissive, 0);
 
+  if (!drawLevelItems._matrix) drawLevelItems._matrix = new Matrix4();
+  const m = drawLevelItems._matrix;
   for (const slot of g_LevelItemSlots) {
+    if (!isDrawPointVisible(slot.x + 0.5, slot.z + 0.5, 1.0)) continue;
     const tex = g_SuburbTexObjs[slot.texName || 'woodendeck.png'];
     if (tex) {
       gl.activeTexture(gl.TEXTURE5);
@@ -746,7 +774,7 @@ function drawLevelItems() {
     }
 
     const h = slot.height || 1.0;
-    const m = new Matrix4();
+    m.setIdentity();
     if (slot.type === 'sign') {
       m.translate(slot.x + 0.15, h * 0.5, slot.z + 0.5);
       m.scale(0.14, h, 0.70);
@@ -877,28 +905,55 @@ function assignGoopTiles() {
 }
 
 function buildGoopGeometry() {
-  for (const b of g_goopBatches) gl.deleteBuffer(b.buffer);
+  for (const chunk of g_goopChunks) {
+    for (const b of chunk.batches) gl.deleteBuffer(b.buffer);
+  }
   g_goopBatches = [];
+  g_goopChunks = [];
 
-  const texVerts = {};
-  function ensureArr(name) { if (!texVerts[name]) texVerts[name] = []; return texVerts[name]; }
+  const chunkVerts = new Map();
+  function chunkKey(x, z) {
+    const size = (typeof WORLD_CHUNK_SIZE !== 'undefined') ? WORLD_CHUNK_SIZE : 8;
+    return Math.floor(x / size) + ',' + Math.floor(z / size);
+  }
+  function ensureArr(key, name) {
+    let texVerts = chunkVerts.get(key);
+    if (!texVerts) { texVerts = {}; chunkVerts.set(key, texVerts); }
+    if (!texVerts[name]) texVerts[name] = [];
+    return texVerts[name];
+  }
 
   for (const [key, texName] of g_goopFloorCells) {
     const [x, z] = key.split(',').map(Number);
-    pushFace(ensureArr(texName), x, -1, z, FACE_TOP);
+    pushFace(ensureArr(chunkKey(x, z), texName), x, -1, z, FACE_TOP);
   }
 
   for (const [key, texName] of g_goopWallFaces) {
     const [wx, wz, face, y] = key.split(',').map(Number);
-    pushFace(ensureArr(texName), wx, y, wz, face);
+    pushFace(ensureArr(chunkKey(wx, wz), texName), wx, y, wz, face);
   }
 
-  for (const [texName, verts] of Object.entries(texVerts)) {
-    const data = new Float32Array(verts);
-    const buf  = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
-    g_goopBatches.push({ texName, buffer: buf, vertCount: data.length / 8 });
+  const size = (typeof WORLD_CHUNK_SIZE !== 'undefined') ? WORLD_CHUNK_SIZE : 8;
+  for (const [key, texVerts] of chunkVerts) {
+    const [chunkX, chunkZ] = key.split(',').map(Number);
+    const batches = [];
+    for (const [texName, verts] of Object.entries(texVerts)) {
+      const data = new Float32Array(verts);
+      const buf  = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+      const batch = { texName, buffer: buf, vertCount: data.length / 8 };
+      batches.push(batch);
+      g_goopBatches.push(batch);
+    }
+    if (batches.length > 0) {
+      g_goopChunks.push({
+        centerX: chunkX * size + size * 0.5,
+        centerZ: chunkZ * size + size * 0.5,
+        radius: Math.SQRT2 * size * 0.5,
+        batches,
+      });
+    }
   }
 }
 
@@ -906,7 +961,8 @@ function drawGoopWorld() {
   if (g_goopBatches.length === 0) return;
 
   const STRIDE   = 32;
-  const identity = new Matrix4();
+  if (!drawGoopWorld._identity) drawGoopWorld._identity = new Matrix4();
+  const identity = drawGoopWorld._identity.setIdentity();
   gl.uniformMatrix4fv(u_ModelMatrix, false, identity.elements);
   gl.uniform1i(u_whichTexture, 4);
   gl.uniform1f(u_texColorWeight, 1.0);
@@ -920,21 +976,25 @@ function drawGoopWorld() {
   gl.enable(gl.POLYGON_OFFSET_FILL);
   gl.polygonOffset(-1.0, -1.0);
 
-  for (const batch of g_goopBatches) {
-    const tex = g_GoopTexObjs[batch.texName];
-    if (!tex) continue;
-    gl.activeTexture(gl.TEXTURE4);
-    gl.bindTexture(gl.TEXTURE_2D, tex);
+  const chunks = g_goopChunks.length > 0 ? g_goopChunks : [{ batches: g_goopBatches }];
+  for (const chunk of chunks) {
+    if (chunk.centerX !== undefined && typeof isWorldChunkVisible === 'function' && !isWorldChunkVisible(chunk)) continue;
+    for (const batch of chunk.batches) {
+      const tex = g_GoopTexObjs[batch.texName];
+      if (!tex) continue;
+      gl.activeTexture(gl.TEXTURE4);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, batch.buffer);
-    gl.vertexAttribPointer(a_Position, 3, gl.FLOAT, false, STRIDE,  0);
-    gl.vertexAttribPointer(a_TexCoord, 2, gl.FLOAT, false, STRIDE, 12);
-    gl.vertexAttribPointer(a_Normal,   3, gl.FLOAT, false, STRIDE, 20);
-    gl.enableVertexAttribArray(a_Position);
-    gl.enableVertexAttribArray(a_TexCoord);
-    gl.enableVertexAttribArray(a_Normal);
+      gl.bindBuffer(gl.ARRAY_BUFFER, batch.buffer);
+      gl.vertexAttribPointer(a_Position, 3, gl.FLOAT, false, STRIDE,  0);
+      gl.vertexAttribPointer(a_TexCoord, 2, gl.FLOAT, false, STRIDE, 12);
+      gl.vertexAttribPointer(a_Normal,   3, gl.FLOAT, false, STRIDE, 20);
+      gl.enableVertexAttribArray(a_Position);
+      gl.enableVertexAttribArray(a_TexCoord);
+      gl.enableVertexAttribArray(a_Normal);
 
-    gl.drawArrays(gl.TRIANGLES, 0, batch.vertCount);
+      gl.drawArrays(gl.TRIANGLES, 0, batch.vertCount);
+    }
   }
 
   gl.depthMask(true);
@@ -946,6 +1006,7 @@ function drawGoopWorld() {
 function drawExitDoorMarker() {
   if (g_currentLevel !== LEVEL_BACKROOMS || !g_singleCubeBuffer) return;
   if (typeof DOOR_CELL_X === 'undefined' || DOOR_CELL_X < 0) return;
+  if (!isDrawPointVisible(DOOR_CELL_X + 0.5, DOOR_CELL_Z + 0.5, 1.5)) return;
 
   bindSingleCubeBuffer();
   gl.enable(gl.BLEND);
@@ -959,7 +1020,8 @@ function drawExitDoorMarker() {
   gl.uniform1f(u_texColorWeight, 1.0);
   gl.uniform4f(u_baseColor, 1.0, 1.0, 1.0, 1.0);
   gl.uniform1i(u_emissive, 0);
-  const doorPanel = new Matrix4();
+  if (!drawExitDoorMarker._doorPanel) drawExitDoorMarker._doorPanel = new Matrix4();
+  const doorPanel = drawExitDoorMarker._doorPanel.setIdentity();
   doorPanel.translate(doorX, 1.08, doorZ);
   doorPanel.scale(0.06, 2.16, 1.08);
   gl.uniformMatrix4fv(u_ModelMatrix, false, doorPanel.elements);
@@ -975,7 +1037,8 @@ function drawExitDoorMarker() {
     { y: 2.25, z: doorZ,        sy: 0.11, sz: 1.34 },
     { y: 0.03, z: doorZ,        sy: 0.06, sz: 1.34 },
   ];
-  const frameMatrix = new Matrix4();
+  if (!drawExitDoorMarker._frameMatrix) drawExitDoorMarker._frameMatrix = new Matrix4();
+  const frameMatrix = drawExitDoorMarker._frameMatrix;
   for (const piece of framePieces) {
     frameMatrix.setIdentity();
     frameMatrix.translate(doorX - 0.045, piece.y, piece.z);
@@ -1177,28 +1240,16 @@ function isPowerOfTwo(value) {
 
 function applyTexParams(width, height) {
   const pot = isPowerOfTwo(width || 0) && isPowerOfTwo(height || 0);
-  if (pot) {
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.REPEAT);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.REPEAT);
-    gl.generateMipmap(gl.TEXTURE_2D);
-    if (g_anisoExt) {
-      const maxAniso = gl.getParameter(g_anisoExt.MAX_TEXTURE_MAX_ANISOTROPY_EXT) || 1;
-      gl.texParameterf(gl.TEXTURE_2D, g_anisoExt.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(4, maxAniso));
-    }
-  } else {
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.CLAMP_TO_EDGE);
-  }
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, pot ? gl.REPEAT : gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, pot ? gl.REPEAT : gl.CLAMP_TO_EDGE);
 }
 
 // CLAMP_TO_EDGE params required for NPOT textures (all goop PNGs).
 function _goopTexParams() {
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.CLAMP_TO_EDGE);
 }
@@ -1488,6 +1539,7 @@ function setupInput() {
     const lockMsg = document.getElementById('lockMsg');
     const suppressPause = g_suppressPointerPause;
     if (lockMsg) lockMsg.style.display = (locked || suppressPause) ? 'none' : 'block';
+    resetMouseDeltas();
     if (locked) {
       g_ignoreNextMouseMove = true;
       document.addEventListener('mousemove', onMouseMove);
@@ -1511,6 +1563,16 @@ function setupInput() {
   // ── Block interaction (mousedown, not click, to avoid pointer-lock click) ─
   canvas.addEventListener('mousedown', onMouseDown);
   canvas.addEventListener('contextmenu', e => e.preventDefault());
+  window.addEventListener('blur', resetMouseDeltas);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) resetMouseDeltas();
+  });
+}
+
+function resetMouseDeltas() {
+  g_pendingMouseX = 0;
+  g_pendingMouseY = 0;
+  g_ignoreNextMouseMove = true;
 }
 
 function requestGamePointerLock() {
@@ -1528,12 +1590,12 @@ function onMouseMove(e) {
     g_ignoreNextMouseMove = false;
     return;
   }
-  const mx = Math.max(-MOUSE_DELTA_CAP, Math.min(MOUSE_DELTA_CAP, e.movementX || 0));
-  const my = Math.max(-MOUSE_DELTA_CAP, Math.min(MOUSE_DELTA_CAP, e.movementY || 0));
+  const mx = Math.max(-MOUSE_EVENT_DELTA_CAP, Math.min(MOUSE_EVENT_DELTA_CAP, e.movementX || 0));
+  const my = Math.max(-MOUSE_EVENT_DELTA_CAP, Math.min(MOUSE_EVENT_DELTA_CAP, e.movementY || 0));
   // Accumulate deltas — applied once per frame in processInput to avoid
   // sub-frame jitter from high-frequency mouse polling.
-  g_pendingMouseX += mx;
-  g_pendingMouseY += my;
+  g_pendingMouseX = Math.max(-MOUSE_PENDING_DELTA_CAP, Math.min(MOUSE_PENDING_DELTA_CAP, g_pendingMouseX + mx));
+  g_pendingMouseY = Math.max(-MOUSE_PENDING_DELTA_CAP, Math.min(MOUSE_PENDING_DELTA_CAP, g_pendingMouseY + my));
 }
 
 function onMouseDown(e) {
@@ -1694,7 +1756,7 @@ function isBlockedAt(x, z) {
   // furniture acts as a solid circular obstacle. only check enabled kinds.
   if (typeof g_FurnitureSlots !== 'undefined') {
     for (const f of g_FurnitureSlots) {
-      try { if (eval('ENABLE_' + f.kind) === false) continue; } catch(_) {}
+      if (!isFurnitureKindEnabled(f.kind)) continue;
       const dx = x - f.x, dz = z - f.z;
       if (dx * dx + dz * dz < (0.55 + r) * (0.55 + r)) return true;
     }
@@ -1717,9 +1779,15 @@ function tryMove(dx, dz) {
 function processInput(dt) {
   // Apply accumulated mouse deltas once per frame (prevents sub-frame jitter
   // from high-polling-rate mice applying many small increments between renders).
-  const sensitivity = 0.15;
-  if (g_pendingMouseX !== 0) { camera.panLeft(g_pendingMouseX * sensitivity);  g_pendingMouseX = 0; }
-  if (g_pendingMouseY !== 0) { camera.lookVertical(-g_pendingMouseY * sensitivity); g_pendingMouseY = 0; }
+  const sensitivity = 0.12;
+  const mx = Math.max(-MOUSE_FRAME_DELTA_CAP, Math.min(MOUSE_FRAME_DELTA_CAP, g_pendingMouseX));
+  const my = Math.max(-MOUSE_FRAME_DELTA_CAP, Math.min(MOUSE_FRAME_DELTA_CAP, g_pendingMouseY));
+  g_pendingMouseX -= mx;
+  g_pendingMouseY -= my;
+  if (Math.abs(g_pendingMouseX) < 0.001) g_pendingMouseX = 0;
+  if (Math.abs(g_pendingMouseY) < 0.001) g_pendingMouseY = 0;
+  if (mx !== 0) camera.panLeft(mx * sensitivity);
+  if (my !== 0) camera.lookVertical(-my * sensitivity);
 
   if (typeof isNarrativeMovementLocked === 'function' && isNarrativeMovementLocked()) {
     g_isSprinting = false;
@@ -1762,8 +1830,8 @@ function processInput(dt) {
     tryMove(dx, dz);
     if (typeof narrativeRecordMovement === 'function') narrativeRecordMovement();
   }
-  if (g_keys['q'] && document.pointerLockElement !== canvas) camera.panLeft(rotSpd);
-  if (g_keys['e'] && document.pointerLockElement !== canvas) camera.panRight(rotSpd);
+  if (g_keys['q']) camera.panLeft(rotSpd);
+  if (g_keys['e']) camera.panRight(rotSpd);
 
   // ── Walk-bob + player footstep audio ────────────────────────────────
   // We modulate eye-Y by a small sine while moving (and lerp it back when
@@ -1811,12 +1879,26 @@ var g_lastSanityBg = '';
 var g_lastSprintWidth = '';
 var g_lastSprintBg = '';
 var g_lastSprintOpacity = '';
+var g_hudEls = null;
+
+function getHudEls() {
+  if (!g_hudEls) {
+    g_hudEls = {
+      timer: document.getElementById('timer'),
+      speedrun: document.getElementById('speedrunTimer'),
+      sanityFill: document.getElementById('sanityFill'),
+      sprintFill: document.getElementById('sprintFill'),
+    };
+  }
+  return g_hudEls;
+}
 
 function updateHUD() {
+  const hud = getHudEls();
   const secs = Math.max(0, g_timer);
   const mm   = Math.floor(secs / 60).toString().padStart(2, '0');
   const ss   = Math.floor(secs % 60).toString().padStart(2, '0');
-  const timerEl = document.getElementById('timer');
+  const timerEl = hud.timer;
   const timerText = mm + ':' + ss;
   const timerDanger = secs < 10;
   if (timerEl && timerText !== g_lastTimerText) {
@@ -1828,7 +1910,7 @@ function updateHUD() {
     g_lastTimerDanger = timerDanger;
   }
 
-  const speedrunEl = document.getElementById('speedrunTimer');
+  const speedrunEl = hud.speedrun;
   if (speedrunEl) {
     if (g_speedrunFinished || g_lastSpeedrunShown) {
       const speedrunText = 'TIME ' + formatSpeedrunTime(g_speedrunTime);
@@ -1845,7 +1927,7 @@ function updateHUD() {
 
   const dist  = g_entityActive ? getEntityDist() : 999;
   const ratio = Math.max(0, Math.min(1, dist / 20));
-  const fill  = document.getElementById('sanityFill');
+  const fill  = hud.sanityFill;
   if (fill) {
     const sanityWidth = Math.round(ratio * 100) + '%';
     const sanityBg = ratio > 0.5 ? '#4aff60'
@@ -1864,7 +1946,7 @@ function updateHUD() {
   // Sprint gauge — cyan when full, fades to red as it depletes.
   // When locked out (depleted, recharging), the bar pulses slowly between
   // dim and bright red so the player sees they cannot sprint yet.
-  const sprintFill = document.getElementById('sprintFill');
+  const sprintFill = hud.sprintFill;
   if (sprintFill) {
     const sprintWidth = Math.round(g_sprint * 100) + '%';
     if (sprintWidth !== g_lastSprintWidth) {
@@ -1897,13 +1979,16 @@ function updateHUD() {
   updateProximityAudio(dist);
 }
 
-function updateFps(timestamp) {
-  g_frameCount++;
-  if (timestamp - g_lastFpsMs >= 500) {
-    const fps = (g_frameCount / ((timestamp - g_lastFpsMs) / 1000)).toFixed(0);
-    document.getElementById('fps').textContent = 'FPS: ' + fps + getPerformanceHudSuffix();
-    g_frameCount  = 0;
-    g_lastFpsMs   = timestamp;
+function updateFps(timestamp, frameMs) {
+  if (frameMs > 0) {
+    const alpha = frameMs > g_frameMsSmoothed ? 0.25 : 0.08;
+    g_frameMsSmoothed += (frameMs - g_frameMsSmoothed) * alpha;
+  }
+  if (timestamp - g_lastFpsMs >= 250) {
+    const fps = g_frameMsSmoothed > 0 ? (1000 / g_frameMsSmoothed) : 0;
+    const fpsEl = document.getElementById('fps');
+    if (fpsEl) fpsEl.textContent = 'FPS: ' + fps.toFixed(0) + ' (' + g_frameMsSmoothed.toFixed(1) + 'ms)' + getPerformanceHudSuffix();
+    g_lastFpsMs = timestamp;
   }
 }
 
@@ -2005,11 +2090,16 @@ function setGameFullscreen(enabled) {
 
 function applyCanvasRenderSize(cssW, cssH) {
   if (!canvas || !gl) return;
+  const viewport = document.getElementById('gameViewport');
   const scale = g_performanceMode ? PERFORMANCE_RENDER_SCALE : 1.0;
   const displayW = Math.max(1, Math.floor(cssW));
   const displayH = Math.max(1, Math.floor(cssH));
   const renderW = Math.max(320, Math.floor(displayW * scale));
   const renderH = Math.max(240, Math.floor(displayH * scale));
+  if (viewport) {
+    viewport.style.width = displayW + 'px';
+    viewport.style.height = displayH + 'px';
+  }
   canvas.style.width = displayW + 'px';
   canvas.style.height = displayH + 'px';
   if (canvas.width !== renderW) canvas.width = renderW;
