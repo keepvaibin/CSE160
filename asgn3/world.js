@@ -819,10 +819,10 @@ function buildSuburbGeometry() {
   _pushCuboid(doorWall, 15.00, 2.0, doorZ0, 17.00, 4.0, doorZ1);
   const doorBottom = arr(SUBURB_DOOR_BOTTOM_TEX);
   const doorTop = arr(SUBURB_DOOR_TOP_TEX);
-  _pushCuboid(doorBottom, 15.00, 0.0, doorZ0, 15.95, 1.0, doorZ1);
-  _pushCuboid(doorTop,    15.00, 1.0, doorZ0, 15.95, 2.0, doorZ1);
-  _pushCuboid(doorBottom, 16.05, 0.0, doorZ0, 17.00, 1.0, doorZ1);
-  _pushCuboid(doorTop,    16.05, 1.0, doorZ0, 17.00, 2.0, doorZ1);
+  _pushCuboid(doorBottom, 15.00, 0.0, doorZ0, 16.00, 1.0, doorZ1);
+  _pushCuboid(doorTop,    15.00, 1.0, doorZ0, 16.00, 2.0, doorZ1);
+  _pushCuboid(doorBottom, 16.00, 0.0, doorZ0, 17.00, 1.0, doorZ1);
+  _pushCuboid(doorTop,    16.00, 1.0, doorZ0, 17.00, 2.0, doorZ1);
 
   for (const slot of g_LevelItemSlots) {
     const tex = slot.texName || 'woodendeck.png';

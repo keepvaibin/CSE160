@@ -153,10 +153,14 @@ files into one canvas before uploading it to TEXTURE3. The Backrooms wall cell
 marked as DOOR_TYPE uses that sampler for the lower part of the door and wall
 texture above it.
 
-applyTexParams() uses NEAREST for both min and mag filtering. Power-of-two
-textures repeat; other textures clamp to edge. No mipmaps are generated. This
-keeps texture upload simple and keeps performance mode from being a separate
-texture-quality mode. Performance mode only changes render resolution and fog.
+applyTexParams() changes its behavior based on performance mode. In normal mode,
+power-of-two textures use LINEAR_MIPMAP_LINEAR for minification, LINEAR for
+magnification, REPEAT wrapping when allowed, and gl.generateMipmap() after each
+upload. Non-power-of-two textures use LINEAR and CLAMP_TO_EDGE because WebGL 1
+cannot safely repeat or mipmap them. In performance mode, textures switch to
+NEAREST min/mag filtering and skip mipmap use. setPerformanceMode() refreshes
+the stored texture records so already-loaded textures change filtering when the
+checkbox is toggled.
 
 6. The shader and lighting model
 --------------------------------
@@ -640,13 +644,15 @@ The project uses several performance choices that matter for a 96 by 96 world:
 - Entity drawing reuses Matrix4 objects.
 - HUD updates cache DOM element references and avoid repeated text/style writes
   when values have not changed.
-- Texture filtering uses NEAREST and avoids mipmap generation.
+- Normal mode uses bilinear filtering and mipmaps on power-of-two textures;
+  performance mode switches textures to NEAREST and avoids mipmap sampling.
 - Mouse deltas are capped per event, capped while pending, and capped per frame.
 
-Performance mode is intentionally limited. It sets the canvas backing resolution
-to 40 percent of the CSS display size and tightens fog distances. It does not use
-different world culling or hide different geometry. Normal mode and performance
-mode share the same optimized draw paths.
+Performance mode sets the canvas backing resolution to 40 percent of the CSS
+display size, tightens fog distances, and switches texture sampling to cheaper
+nearest-neighbor filtering. It does not use different world culling or hide
+different geometry. Normal mode and performance mode share the same optimized
+draw paths.
 
 21. Window frame and fullscreen behavior
 ----------------------------------------

@@ -43,6 +43,7 @@ const BACKROOMS_FOG_FAR = 14.0;
 const BACKROOMS_PERF_FOG_NEAR = 1.0;
 const BACKROOMS_PERF_FOG_FAR = 8.5;
 var g_SuburbTexObjs = {};
+var g_TextureParamRecords = [];
 var g_LevelModelMeshes = {};
 var g_suppressPointerPause = false;
 
@@ -1039,7 +1040,7 @@ function loadTexture(texUnitEnum, src, fallbackType) {
   const fbCanvas = generateFallbackTexture(fallbackType);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, fbCanvas);
-  applyTexParams(fbCanvas.width, fbCanvas.height);
+  setTextureParams(texUnitEnum, tex, fbCanvas.width, fbCanvas.height, false);
 
   const img = new Image();
   img.onload = () => {
@@ -1047,7 +1048,7 @@ function loadTexture(texUnitEnum, src, fallbackType) {
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
-    applyTexParams(img.width, img.height);
+    setTextureParams(texUnitEnum, tex, img.width, img.height, false);
   };
   img.onerror = () => {
     console.log('Texture not found: ' + src + '  (using procedural fallback)');
@@ -1063,7 +1064,7 @@ function loadBackroomsDoorTexture(texUnitEnum) {
   const fbCanvas = generateFallbackTexture('door');
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, fbCanvas);
-  applyTexParams(fbCanvas.width, fbCanvas.height);
+  setTextureParams(texUnitEnum, tex, fbCanvas.width, fbCanvas.height, false);
 
   const topImg = new Image();
   const bottomImg = new Image();
@@ -1087,7 +1088,7 @@ function loadBackroomsDoorTexture(texUnitEnum) {
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cvs);
-    applyTexParams(cvs.width, cvs.height);
+    setTextureParams(texUnitEnum, tex, cvs.width, cvs.height, false);
   }
 
   topImg.onload = () => { topReady = true; uploadIfReady(); };
@@ -1102,19 +1103,44 @@ function isPowerOfTwo(value) {
   return value > 0 && (value & (value - 1)) === 0;
 }
 
-function applyTexParams(width, height) {
+function applyTexParams(width, height, forceClamp) {
   const pot = isPowerOfTwo(width || 0) && isPowerOfTwo(height || 0);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, pot ? gl.REPEAT : gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, pot ? gl.REPEAT : gl.CLAMP_TO_EDGE);
+  const wrap = (pot && !forceClamp) ? gl.REPEAT : gl.CLAMP_TO_EDGE;
+  if (g_performanceMode) {
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  } else {
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, pot ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    if (pot) gl.generateMipmap(gl.TEXTURE_2D);
+  }
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap);
 }
 
-function _goopTexParams() {
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S,     gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.CLAMP_TO_EDGE);
+function setTextureParams(texUnitEnum, tex, width, height, forceClamp) {
+  let rec = g_TextureParamRecords.find(r => r.tex === tex);
+  if (!rec) {
+    rec = { texUnitEnum, tex, width, height, forceClamp: !!forceClamp };
+    g_TextureParamRecords.push(rec);
+  } else {
+    rec.texUnitEnum = texUnitEnum;
+    rec.width = width;
+    rec.height = height;
+    rec.forceClamp = !!forceClamp;
+  }
+  gl.activeTexture(texUnitEnum);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  applyTexParams(width, height, forceClamp);
+}
+
+function refreshTextureParams() {
+  if (!gl) return;
+  for (const rec of g_TextureParamRecords) setTextureParams(rec.texUnitEnum, rec.tex, rec.width, rec.height, rec.forceClamp);
+}
+
+function _goopTexParams(tex, width, height) {
+  setTextureParams(gl.TEXTURE4, tex, width, height, true);
 }
 
 function loadGoopTextures() {
@@ -1131,7 +1157,7 @@ function loadGoopTextures() {
 
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
                   new Uint8Array([0, 0, 0, 0]));
-    _goopTexParams();
+    _goopTexParams(tex, 1, 1);
     g_GoopTexObjs[name] = tex;
     const img = new Image();
     img.onload = () => {
@@ -1139,7 +1165,7 @@ function loadGoopTextures() {
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
-      _goopTexParams();
+      _goopTexParams(tex, img.width, img.height);
     };
     img.onerror = () => console.log('goop texture missing: textures/' + name);
     img.src = 'textures/' + name;
@@ -1173,7 +1199,7 @@ function loadSuburbTextures() {
     const fb = generateFallbackTexture(name.replace('.png', ''));
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, fb);
-    applyTexParams(fb.width, fb.height);
+    setTextureParams(gl.TEXTURE5, tex, fb.width, fb.height, false);
     g_SuburbTexObjs[name] = tex;
     const img = new Image();
     img.onload = () => {
@@ -1182,7 +1208,7 @@ function loadSuburbTextures() {
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
       const src = getSuburbTextureUploadSource(name, img);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
-      applyTexParams(src.width, src.height);
+      setTextureParams(gl.TEXTURE5, tex, src.width, src.height, false);
     };
     img.onerror = () => console.log('suburb texture missing: textures/' + name + ' (using fallback)');
     img.src = 'textures/' + name;
@@ -1920,6 +1946,7 @@ function syncPerformanceCheckboxes() {
 
 function setPerformanceMode(enabled) {
   g_performanceMode = !!enabled;
+  refreshTextureParams();
   syncPerformanceCheckboxes();
   applyCurrentCanvasSize();
   applyLevelFogSettings();
