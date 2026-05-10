@@ -1,25 +1,12 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// world.js — 32×32 Backrooms maze: map data, batch geometry, door query
-//
-// Map scheme:
-//   g_Map[x][z] = 0  → open corridor cell
-//   g_Map[x][z] = 4  → solid wall (height 4)
-//   g_MapType[x][z]  → texture group (0=wall, 3=door)
-//
-// Geometry groups (match sampler indices):
-//   0 = walls    (sandstone side)
-//   1 = floor    (mossy cobblestone)
-//   2 = ceiling  (sandstone top)
-//   3 = door     (oak door)
-// ─────────────────────────────────────────────────────────────────────────────
+
 
 const LEVEL1_MAP_SIZE = 32;
 const LEVEL2_MAP_SIZE = 96;
-var MAP_SIZE   = LEVEL2_MAP_SIZE;  // current active grid size (32 for suburbs, 96 for Backrooms)
-const WALL_H     = 4;   // default full-height Backrooms wall height
-const DOOR_TYPE  = 3;   // g_MapType value for exit door cells
-const DOOR_HEIGHT = 2;  // door cells render door texture only up to y<2; wall above
-const LIGHT_TYPE = 2;   // g_CeilType value for ceiling cells that are light tiles
+var MAP_SIZE   = LEVEL2_MAP_SIZE;
+const WALL_H     = 4;
+const DOOR_TYPE  = 3;
+const DOOR_HEIGHT = 2;
+const LIGHT_TYPE = 2;
 
 const LEVEL_SUBURBS = 1;
 const LEVEL_BACKROOMS = 2;
@@ -37,7 +24,6 @@ const SUBURB_GRASS_FLOOR_TEX = 'grass.png';
 const SUBURB_DOOR_BOTTOM_TEX = 'Oak_Door_(bottom_texture)_JE4_BE2.png';
 const SUBURB_DOOR_TOP_TEX = 'Oak_Door_(top_texture)_JE5_BE3.png';
 
-// Anchors filled in by initMap() so other modules don't hard-code coordinates.
 var SPAWN_X     = 5.5;
 var SPAWN_Z     = 5.5;
 var ENTITY_SPAWN_X = 48.5;
@@ -47,33 +33,25 @@ var DOOR_CELL_Z    = 88;
 var DOOR_APPROACH_X = 92.5;
 var DOOR_APPROACH_Z = 88.5;
 
-// Current level (1 = hardcoded intro, 2 = procedural Backrooms, 3 = TBD).
-// Set this before calling initMap() to switch which level is loaded.
 var g_currentLevel = LEVEL_SUBURBS;
 
-// world-space positions of every actively-illuminating ceiling fixture.
-// capped at MAX_LIGHTS (8) in main.js — the rest of the light tiles are
-// purely decorative texture.
 var g_LightPositions = [];
 
-// list of furniture pieces to render. populated by initMap. each entry:
-//   { kind: 'chair'|'chair1'|...|'sofa'|'tv', x, z, yaw }
-// main.js consumes this to draw and to mark the cells as obstructed.
 var g_FurnitureSlots = [];
 
-var g_Map     = [];   // g_Map[x][z]     — 0=open, 4=wall
-var g_MapType = [];   // g_MapType[x][z] — 0=wall-tex, 3=door-tex
-var g_CeilType = [];  // g_CeilType[x][z] — 0=plain ceiling, 2=light tile
-var g_CollisionMap = [];    // invisible blockers (fence/porch/trapped invisible walls)
-var g_InteractiveMap = [];  // interaction codes for LMB/E style actions
-var g_SuburbFloorTex = [];  // per-cell floor texture name for level 1
-var g_SuburbWallTex  = [];  // per-cell cube/wall texture name for level 1
-var g_LevelItemSlots = [];  // small item cubes/signs: {type,x,z,texName,color,height}
-var g_LevelModelSlots = []; // OBJ models (fence): {kind,x,z,yaw,length,height,color}
+var g_Map     = [];
+var g_MapType = [];
+var g_CeilType = [];
+var g_CollisionMap = [];
+var g_InteractiveMap = [];
+var g_SuburbFloorTex = [];
+var g_SuburbWallTex  = [];
+var g_LevelItemSlots = [];
+var g_LevelModelSlots = [];
 var g_levelSpawnYaw = 90;
 var g_skyColor = [0.53, 0.81, 0.98, 1.0];
 
-var g_suburbBatches = [];   // [{texName, buffer, vertCount}] for dynamic sampler5 drawing
+var g_suburbBatches = [];
 
 var g_worldBuffers    = [null, null, null, null];
 var g_worldVertCounts = [0, 0, 0, 0];
@@ -86,9 +64,6 @@ function _worldIdentity() {
   return g_worldIdentityMatrix.setIdentity();
 }
 
-// Hardcoded 32×32 Level 1 layout for the lab spec.  Rows are z, columns are x.
-// Values are visible cube heights: 0=open, 1=short block, 2=medium, 3=tall, 4=full wall.
-// Fence collision/rendering is stored separately because the fence is an OBJ model.
 const map_suburbs = [
   [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
   [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
@@ -139,44 +114,12 @@ function _copyRowsToXZ(rows) {
   return out;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// initWorldBuffers
-// ─────────────────────────────────────────────────────────────────────────────
 function initWorldBuffers() {
   for (let i = 0; i < 4; i++) {
     g_worldBuffers[i] = gl.createBuffer();
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// initLevel2Map — procedural Backrooms Level 2 generator
-// Random layout every play-through (seeded from wall-clock + Math.random).
-// ───────────────────────────────────────────────────────────────────────────────
-//
-// Algorithm rationale ("liminal" — not a perfect maze):
-//   The Kane Pixels Backrooms aesthetic is *open* office space carved into
-//   irregular blobs by partial walls and freestanding pillars, not narrow
-//   1-wide corridors.  A standard DFS perfect-maze gives narrow snaking
-//   corridors and feels nothing like a Level-0 environment.  Instead we:
-//
-//     (1) Place 3 "anchor" rooms at fixed positions — player spawn (W),
-//         exit (E), entity spawn (SE) — so the game loop is always solvable.
-//     (2) Scatter ~30 large rectangular rooms (5×5 to 10×10) with a seeded
-//         RNG.  Rooms may overlap; overlap is intentional — it produces
-//         the merged-blob open spaces characteristic of the Backrooms.
-//     (3) Connect every room to the next in spawn order with wide L-shaped
-//         hallways (2–3 cells across).  Then add ~10 extra random pair
-//         connections so the topology has *loops* (no dead ends — the
-//         dimension is supposed to feel infinite and inescapable).
-//     (4) BFS from the spawn cell; carve any unreachable open cell that we
-//         placed back into a wall (guarantees the entity can always path
-//         to the player and vice-versa).
-//     (5) Sprinkle 1×1 / 1×2 / 2×2 freestanding pillars inside rooms to
-//         break long sightlines (a key part of Backrooms dread).  We only
-//         place a pillar where every neighbouring cell is open, so it never
-//         touches a wall — it stands alone in the middle of the floor.
-//     (6) Mark a single wall cell on the east side as the exit door.
-// ───────────────────────────────────────────────────────────────────────────────
 function initLevel2Map() {
   MAP_SIZE = LEVEL2_MAP_SIZE;
   g_currentLevel = LEVEL_BACKROOMS;
@@ -190,7 +133,7 @@ function initLevel2Map() {
   g_LevelItemSlots = [];
   g_LevelModelSlots = [];
   g_suburbBatches = [];
-  // Non-deterministic seed: different layout every play-through.
+
   let _seed = ((Date.now() | 0) ^ 0x9E3779B1) ^ ((Math.random() * 0x7fffffff) | 0) | 1;
   function rng() {
     _seed = (_seed * 1664525 + 1013904223) | 0;
@@ -198,7 +141,6 @@ function initLevel2Map() {
   }
   function rint(lo, hi) { return lo + Math.floor(rng() * (hi - lo + 1)); }
 
-  // Initialise: every cell starts as a solid wall
   for (let x = 0; x < MAP_SIZE; x++) {
     g_Map[x]      = new Array(MAP_SIZE).fill(WALL_H);
     g_MapType[x]  = new Array(MAP_SIZE).fill(0);
@@ -215,15 +157,12 @@ function initLevel2Map() {
         g_Map[x][z] = 0;
   }
 
-  // (1) Anchor rooms — spawn (NW), door (SE), entity (centre).
-  //     Spawn and door are intentionally NOT in the same row or column,
-  //     so the player cannot just hold W and walk to the exit.
   const anchors = [
-    { cx:  6, cz:  6, w: 6, h: 6 },  // 0 : player spawn (NW)
-    { cx: 90, cz: 88, w: 6, h: 6 },  // 1 : exit foyer  (SE)
-    { cx: 48, cz: 48, w: 7, h: 7 },  // 2 : entity spawn / central plaza
-    { cx: 88, cz:  8, w: 6, h: 6 },  // 3 : NE landmark room
-    { cx:  8, cz: 88, w: 6, h: 6 },  // 4 : SW landmark room
+    { cx:  6, cz:  6, w: 6, h: 6 },
+    { cx: 90, cz: 88, w: 6, h: 6 },
+    { cx: 48, cz: 48, w: 7, h: 7 },
+    { cx: 88, cz:  8, w: 6, h: 6 },
+    { cx:  8, cz: 88, w: 6, h: 6 },
     { cx: 24, cz: 64, w: 6, h: 6 },
     { cx: 64, cz: 24, w: 6, h: 6 },
   ];
@@ -235,7 +174,6 @@ function initLevel2Map() {
     carve(x0, z0, x1, z1);
   }
 
-  // (2) Many small-to-medium random rooms (4x4 to 6x6).
   const TARGET_ROOMS = 55;
   let attempts = 0;
   while (rooms.length < TARGET_ROOMS && attempts < 1500) {
@@ -249,7 +187,6 @@ function initLevel2Map() {
     carve(x0, z0, x1, z1);
   }
 
-  // a handful of bigger 'hall' rooms (8x8 to 10x10).
   const BIG_ROOMS = 6;
   let bigPlaced = 0, bigTries = 0;
   while (bigPlaced < BIG_ROOMS && bigTries < 800) {
@@ -265,8 +202,6 @@ function initLevel2Map() {
     bigPlaced++;
   }
 
-  // (3) Sequential L-shaped hallways between consecutive rooms.
-  //     Width 2 (rarely 3) so corridors feel snug.
   function carveCorridor(a, b) {
     const width = (rng() < 0.15) ? 3 : 2;
     const half  = (width - 1) >> 1;
@@ -279,14 +214,13 @@ function initLevel2Map() {
     else        carve(Math.min(ex, b.cx), b.cz - half, Math.max(ex, b.cx), b.cz + half);
   }
   for (let i = 0; i < rooms.length - 1; i++) carveCorridor(rooms[i], rooms[i + 1]);
-  // Many extra random loop connections to reduce dead ends.
+
   for (let k = 0; k < 20; k++) {
     const a = rooms[Math.floor(rng() * rooms.length)];
     const b = rooms[Math.floor(rng() * rooms.length)];
     if (a !== b) carveCorridor(a, b);
   }
-  // Nearest-neighbour connections: for every room, connect to its 2
-  // closest rooms (centre-to-centre).  Ensures no cluster is isolated.
+
   for (let i = 0; i < rooms.length; i++) {
     const ra = rooms[i];
     const byDist = rooms
@@ -299,8 +233,6 @@ function initLevel2Map() {
     }
   }
 
-  // (4) Connectivity sweep: any open cell unreachable from the spawn cell
-  //     is filled back in.  Prevents islands of "floating" rooms.
   {
     const seen = new Array(MAP_SIZE);
     for (let i = 0; i < MAP_SIZE; i++) seen[i] = new Array(MAP_SIZE).fill(false);
@@ -323,9 +255,6 @@ function initLevel2Map() {
     }
   }
 
-  // (5) Freestanding pillars + internal partition walls inside rooms.
-  //     Pillars break sightlines; partition walls turn open rooms into
-  //     U-shaped half-rooms, forcing the player to actually navigate.
   function pillarOK(px, pz, sz) {
     for (let dx = -1; dx <= sz; dx++)
       for (let dz = -1; dz <= sz; dz++) {
@@ -337,10 +266,9 @@ function initLevel2Map() {
   }
   for (let ri = 0; ri < rooms.length; ri++) {
     const room = rooms[ri];
-    // Skip player spawn room and door foyer
+
     if (ri === 0 || ri === 1) continue;
 
-    // 0–1 freestanding pillars per room (was 0–2)
     const want = rint(0, 1);
     let placed = 0, tries = 0;
     while (placed < want && tries < 12) {
@@ -356,12 +284,11 @@ function initLevel2Map() {
       placed++;
     }
 
-    // 10% chance: drop a partition wall (reduced from 18%)
     if (rng() < 0.10) {
       const w = room.x1 - room.x0, h = room.z1 - room.z0;
       if (w >= 4 && h >= 4) {
         if (rng() < 0.5) {
-          // Horizontal partition; leave a 1-cell gap somewhere
+
           const pz   = rint(room.z0 + 1, room.z1 - 1);
           const gapX = rint(room.x0 + 1, room.x1 - 1);
           for (let x = room.x0 + 1; x <= room.x1 - 1; x++)
@@ -376,27 +303,16 @@ function initLevel2Map() {
     }
   }
 
-  // (6) Exit door — east wall of the SE foyer (anchor 1).
-  //     Door at far SE corner; player spawns at NW → must traverse the
-  //     full diagonal of the map.  No straight-line shot exists because
-  //     spawn (cz=6) and door (cz=88) are 82 cells apart on z and the
-  //     anchor on cz=6 has no carved corridor at z=88.
   DOOR_CELL_X = 94; DOOR_CELL_Z = 88;
   g_Map[DOOR_CELL_X][DOOR_CELL_Z]     = WALL_H;
   g_MapType[DOOR_CELL_X][DOOR_CELL_Z] = DOOR_TYPE;
-  // Force a small open foyer in front of the door so the exit is reachable
-  // and readable instead of being a one-cell dead-end against wallpaper.
+
   for (let x = 90; x <= 93; x++) {
     for (let z = 87; z <= 89; z++) g_Map[x][z] = 0;
   }
   const doorReachX = DOOR_CELL_X - 1;
   const doorReachZ = DOOR_CELL_Z;
 
-  // (7) Obstruction pass — break up any long straight sightline so the
-  //     player can't just sprint in a single direction across the map.
-  //     For every row and column, find runs of 10+ open cells and plant a
-  //     1×1 wall in the middle.  After each plant, verify the door is
-  //     still reachable from spawn via flood-fill; if not, roll it back.
   function bfsReach(sx, sz, tx, tz) {
     const seen = new Array(MAP_SIZE);
     for (let i = 0; i < MAP_SIZE; i++) seen[i] = new Array(MAP_SIZE).fill(false);
@@ -421,27 +337,25 @@ function initLevel2Map() {
   function tryBlock(bx, bz) {
     if (bx < 1 || bx >= MAP_SIZE - 1 || bz < 1 || bz >= MAP_SIZE - 1) return false;
     if (g_Map[bx][bz] !== 0) return false;
-    // Keep only a small breathing pocket at spawn/exit. The rest of those
-    // rooms can be obstructed so sightlines stay short and culling stays useful.
+
     const spawnDx = bx - spawnCellX, spawnDz = bz - spawnCellZ;
     const doorDx = bx - doorReachX, doorDz = bz - doorReachZ;
     if (spawnDx * spawnDx + spawnDz * spawnDz <= 4) return false;
     if (doorDx * doorDx + doorDz * doorDz <= 4) return false;
     g_Map[bx][bz] = WALL_H;
     if (!bfsReach(spawnCellX, spawnCellZ, doorReachX, doorReachZ)) {
-      g_Map[bx][bz] = 0;       // rollback
+      g_Map[bx][bz] = 0;
       return false;
     }
     return true;
   }
-  // obstruction pass with varying density per region. denser overall so
-  // sightlines stay short and the entity can't see the player from far away.
+
   function regionStep(coord) {
     const h = ((coord * 73856093) ^ ((coord >> 3) * 19349663)) >>> 0;
     const r = (h % 1000) / 1000;
-    if (r < 0.12) return 13 + Math.floor(rng() * 3);   // open-ish
-    if (r < 0.48) return 9 + Math.floor(rng() * 3);    // medium
-    return 6 + Math.floor(rng() * 3);                  // dense / maze-y
+    if (r < 0.12) return 13 + Math.floor(rng() * 3);
+    if (r < 0.48) return 9 + Math.floor(rng() * 3);
+    return 6 + Math.floor(rng() * 3);
   }
   function breakRow(z) {
     let runStart = -1;
@@ -480,9 +394,6 @@ function initLevel2Map() {
   for (let z = 0; z < MAP_SIZE; z++) breakRow(z);
   for (let x = 0; x < MAP_SIZE; x++) breakCol(x);
 
-  // Dead-end cleanup — after the sightline obstruction pass, carve one
-  // extra exit from any open cell that has ≤1 open cardinal neighbour.
-  // 3 iterations handles chains of dead ends introduced by the pass.
   for (let dePass = 0; dePass < 3; dePass++) {
     for (let x = 1; x < MAP_SIZE - 1; x++) {
       for (let z = 1; z < MAP_SIZE - 1; z++) {
@@ -491,7 +402,7 @@ function initLevel2Map() {
         let openCnt = 0;
         for (const [dx, dz] of d4) if (g_Map[x+dx][z+dz] === 0) openCnt++;
         if (openCnt > 1) continue;
-        // Shuffle so we don't always carve the same direction
+
         d4.sort(() => rng() - 0.5);
         for (const [dx, dz] of d4) {
           const nx = x + dx, nz = z + dz;
@@ -499,38 +410,31 @@ function initLevel2Map() {
           if (g_Map[nx][nz] === 0) continue;
           g_Map[nx][nz] = 0;
           if (!bfsReach(spawnCellX, spawnCellZ, doorReachX, doorReachZ)) {
-            g_Map[nx][nz] = WALL_H;   // rollback: would disconnect door
+            g_Map[nx][nz] = WALL_H;
           } else {
-            break;                    // success — one exit is enough
+            break;
           }
         }
       }
     }
   }
 
-  // Final exit alcove: one open tile directly in front of the door, with
-  // wall cells on both sides so the door reads as a framed, intentional exit.
   g_Map[doorReachX][doorReachZ] = 0;
   g_Map[doorReachX][doorReachZ - 1] = WALL_H;
   g_Map[doorReachX][doorReachZ + 1] = WALL_H;
   g_MapType[doorReachX][doorReachZ - 1] = 0;
   g_MapType[doorReachX][doorReachZ + 1] = 0;
 
-  // (8) Place ceiling light tiles.  Every ~7 cells we drop a light tile on
-  //     any open ceiling cell.  The first 8 placements are also added to
-  //     g_LightPositions so they actually contribute illumination via the
-  //     fragment shader's point-light loop.  The rest are decorative.
   g_LightPositions = [];
   for (let x = 4; x < MAP_SIZE - 4; x += 5) {
     for (let z = 4; z < MAP_SIZE - 4; z += 5) {
       if (g_Map[x][z] !== 0) continue;
-      // Probabilistically skip so the grid doesn't read as too regular
+
       if (rng() < 0.35) continue;
       g_CeilType[x][z] = LIGHT_TYPE;
     }
   }
-  // Pick 8 light positions that are reasonably spread — sample a 3×3
-  // grid of map quadrants and grab the closest light tile to each centre.
+
   const wantPositions = 8;
   const grid = 3;
   const cellW = MAP_SIZE / grid;
@@ -553,8 +457,7 @@ function initLevel2Map() {
       }
     }
   }
-  // Always guarantee a light directly above the spawn so the player isn't
-  // standing in a black void on first frame.
+
   if (g_CeilType[anchors[0].cx][anchors[0].cz] !== LIGHT_TYPE) {
     g_CeilType[anchors[0].cx][anchors[0].cz] = LIGHT_TYPE;
   }
@@ -567,17 +470,12 @@ function initLevel2Map() {
   if (g_LightPositions.length > 8) g_LightPositions.length = 8;
   console.log('[world] light positions:', g_LightPositions.length);
 
-  // Update spawn anchors to match
   SPAWN_X = anchors[0].cx + 0.5; SPAWN_Z = anchors[0].cz + 0.5;
   ENTITY_SPAWN_X = anchors[2].cx + 0.5; ENTITY_SPAWN_Z = anchors[2].cz + 0.5;
   DOOR_APPROACH_X = 92.5; DOOR_APPROACH_Z = 88.5;
-  g_levelSpawnYaw = 0;  // face +X, toward the intro sign
+  g_levelSpawnYaw = 0;
   g_skyColor = [0.92, 0.85, 0.22, 1.0];
 
-  // (9) furniture placement. drop one piece in the centre-ish of every
-  // "big" room, plus a few extras in random rooms. each entry stores the
-  // world-space centre + a yaw, and the cell is left walkable (we draw
-  // furniture as decoration and add cheap circle-collision in main.js).
   g_FurnitureSlots = [];
   const KINDS = ['chair', 'chair1', 'chair2', 'chair3', 'chair4'];
   function pickKind(i) { return KINDS[i % KINDS.length]; }
@@ -589,13 +487,13 @@ function initLevel2Map() {
     const kind = pickKind(kindIdx++);
     g_FurnitureSlots.push({ kind, x: cx, z: cz, yaw: rng() * Math.PI * 2 });
   }
-  // sprinkle a handful more in random non-anchor rooms
+
   for (let extra = 0; extra < 10; extra++) {
     const ri = 2 + Math.floor(rng() * (rooms.length - 2));
     const room = rooms[ri];
     const cx = room.cx + 0.5, cz = room.cz + 0.5;
     const kind = pickKind(kindIdx++);
-    // skip if too close to another piece
+
     let tooClose = false;
     for (const f of g_FurnitureSlots) {
       if (Math.abs(f.x - cx) < 3 && Math.abs(f.z - cz) < 3) { tooClose = true; break; }
@@ -606,9 +504,6 @@ function initLevel2Map() {
   console.log('[world] furniture pieces:', g_FurnitureSlots.length);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// initLevel1Map — hand-authored 32×32 suburb tutorial map
-// ─────────────────────────────────────────────────────────────────────────────
 function initLevel1Map() {
   MAP_SIZE = LEVEL1_MAP_SIZE;
   g_currentLevel = LEVEL_SUBURBS;
@@ -624,7 +519,6 @@ function initLevel1Map() {
   g_FurnitureSlots = [];
   g_suburbBatches = [];
 
-  // Floor texture bands: a short road, sidewalk, lawn, porch, and house floor.
   for (let x = 0; x < MAP_SIZE; x++) {
     for (let z = 0; z < MAP_SIZE; z++) {
       if (z <= 1) g_SuburbFloorTex[x][z] = 'road.png';
@@ -644,13 +538,11 @@ function initLevel1Map() {
     if (x >= 0 && x < MAP_SIZE && z >= 0 && z < MAP_SIZE) g_InteractiveMap[x][z] = code;
   }
 
-  // Invisible collision where the OBJ fence sits.  The visible fence is NOT cubes.
   for (let x = 5; x <= 13; x++) { block(x, 3); block(x, 14); }
   for (let x = 18; x <= 26; x++) { block(x, 3); block(x, 14); }
   for (let z = 4; z <= 13; z++) { block(5, z); block(26, z); }
   for (let z = 3; z < MAP_SIZE; z++) { block(0, z); block(31, z); }
 
-  // Fence OBJ instances.  kind='fence' is loaded from models/fence.obj in main.js.
   g_LevelModelSlots.push({ kind: 'fence', x: 9.5,  z: 3.35,  yaw: 90, length: 9.0,  height: 1.45, color: [0.62,0.40,0.22,1] });
   g_LevelModelSlots.push({ kind: 'fence', x: 22.5, z: 3.35,  yaw: 90, length: 9.0,  height: 1.45, color: [0.62,0.40,0.22,1] });
   g_LevelModelSlots.push({ kind: 'fence', x: 9.5,  z: 14.45, yaw: 90, length: 9.0,  height: 1.45, color: [0.62,0.40,0.22,1] });
@@ -658,7 +550,6 @@ function initLevel1Map() {
   g_LevelModelSlots.push({ kind: 'fence', x: 5.35,  z: 8.8,  yaw: 0,  length: 10.5, height: 1.45, color: [0.62,0.40,0.22,1] });
   g_LevelModelSlots.push({ kind: 'fence', x: 26.65, z: 8.8,  yaw: 0,  length: 10.5, height: 1.45, color: [0.62,0.40,0.22,1] });
 
-  // Garden: 3x2 weeds on grass; the weed visuals are OBJ models, not tall cubes.
   for (let gx = 22; gx <= 24; gx++) {
     for (let gz = 7; gz <= 8; gz++) {
       g_Map[gx][gz] = 0;
@@ -668,14 +559,12 @@ function initLevel1Map() {
     }
   }
 
-  // Interactable items use small drawn cubes, not wall collision.
   interact(21, 6, INTERACT_SOIL_BAG);
   interact(21, 9, INTERACT_WATER_CAN);
   for (let gz = 7; gz <= 9; gz++) interact(8, gz, INTERACT_GRASS_ROW);
   g_LevelItemSlots.push({ type: 'soil_bag', x: 21, z: 6, texName: 'dirt_unwatered.png', height: 0.55, color: [0.42,0.25,0.10,1] });
   g_LevelItemSlots.push({ type: 'watering_can', x: 21, z: 9, texName: 'woodendeck.png', height: 0.45, color: [0.45,0.66,0.75,1] });
 
-  // Daylight-like point lights keep Level 1 bright while still using the shader.
   g_LightPositions = [
     [8.0, 8.0, 8.0], [24.0, 8.0, 8.0], [16.0, 8.0, 20.0], [16.0, 8.0, 2.0]
   ];
@@ -683,13 +572,12 @@ function initLevel1Map() {
   ENTITY_SPAWN_X = 48.5; ENTITY_SPAWN_Z = 48.5;
   DOOR_CELL_X = -1; DOOR_CELL_Z = -1;
   DOOR_APPROACH_X = 15.5; DOOR_APPROACH_Z = 16.0;
-  g_levelSpawnYaw = 90;  // face +Z toward the house
+  g_levelSpawnYaw = 90;
   g_skyColor = [0.53, 0.81, 0.98, 1.0];
 }
 
-// Level 3: third level (to be designed later).  Fallback keeps the game stable.
 function initLevel3Map() {
-  console.warn('[world] Level 3 not yet implemented — falling back to Level 2.');
+  console.warn('[world] Level 3 not yet implemented - falling back to Level 2.');
   initLevel2Map();
 }
 
@@ -704,9 +592,6 @@ function setupBackroomsIntroSign() {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// initMap/loadLevel — level dispatcher and memory swapper
-// ─────────────────────────────────────────────────────────────────────────────
 function initMap() {
   if (g_currentLevel === LEVEL_SUBURBS) initLevel1Map();
   else if (g_currentLevel === 3) initLevel3Map();
@@ -868,9 +753,6 @@ function isWorldBlockedCell(x, z) {
   return (g_Map[x][z] > 0) || (g_CollisionMap[x] && g_CollisionMap[x][z] > 0);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// isDoor — true if the map cell is the exit door
-// ─────────────────────────────────────────────────────────────────────────────
 function isDoor(x, z) {
   if (x < 0 || x >= MAP_SIZE || z < 0 || z >= MAP_SIZE) return false;
   return g_MapType[x][z] === DOOR_TYPE;
@@ -878,22 +760,22 @@ function isDoor(x, z) {
 
 function _pushCuboid(arr, x0, y0, z0, x1, y1, z1) {
   function v(x, y, z, u, vv, nx, ny, nz) { arr.push(x, y, z, u, vv, nx, ny, nz); }
-  // +Z
+
   v(x0,y0,z1,0,0,0,0,1); v(x1,y0,z1,1,0,0,0,1); v(x1,y1,z1,1,1,0,0,1);
   v(x0,y0,z1,0,0,0,0,1); v(x1,y1,z1,1,1,0,0,1); v(x0,y1,z1,0,1,0,0,1);
-  // -Z
+
   v(x1,y0,z0,0,0,0,0,-1); v(x0,y0,z0,1,0,0,0,-1); v(x0,y1,z0,1,1,0,0,-1);
   v(x1,y0,z0,0,0,0,0,-1); v(x0,y1,z0,1,1,0,0,-1); v(x1,y1,z0,0,1,0,0,-1);
-  // -X
+
   v(x0,y0,z0,0,0,-1,0,0); v(x0,y0,z1,1,0,-1,0,0); v(x0,y1,z1,1,1,-1,0,0);
   v(x0,y0,z0,0,0,-1,0,0); v(x0,y1,z1,1,1,-1,0,0); v(x0,y1,z0,0,1,-1,0,0);
-  // +X
+
   v(x1,y0,z1,0,0,1,0,0); v(x1,y0,z0,1,0,1,0,0); v(x1,y1,z0,1,1,1,0,0);
   v(x1,y0,z1,0,0,1,0,0); v(x1,y1,z0,1,1,1,0,0); v(x1,y1,z1,0,1,1,0,0);
-  // +Y
+
   v(x0,y1,z0,0,0,0,1,0); v(x1,y1,z0,1,0,0,1,0); v(x1,y1,z1,1,1,0,1,0);
   v(x0,y1,z0,0,0,0,1,0); v(x1,y1,z1,1,1,0,1,0); v(x0,y1,z1,0,1,0,1,0);
-  // -Y
+
   v(x0,y0,z1,0,0,0,-1,0); v(x1,y0,z1,1,0,0,-1,0); v(x1,y0,z0,1,1,0,-1,0);
   v(x0,y0,z1,0,0,0,-1,0); v(x1,y0,z0,1,1,0,-1,0); v(x0,y0,z0,0,1,0,-1,0);
 }
@@ -1022,14 +904,6 @@ function appendBackroomsCellGeometry(groups, x, z) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// buildWorldGeometry — rebuild chunked buffers from g_Map / g_MapType
-//
-// group 0 = wall faces       (wall.png, blue-tinted in shader)
-// group 1 = floor + ceiling  (ceiling_floor.png) — non-light ceiling tiles
-// group 2 = light tile faces (light.png, emissive in shader)
-// group 3 = door faces       (oak door)
-// ─────────────────────────────────────────────────────────────────────────────
 function buildWorldGeometry() {
   clearWorldChunks();
   if (g_currentLevel === LEVEL_SUBURBS) {
@@ -1082,9 +956,6 @@ function buildWorldGeometry() {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// renderWorld — 4 drawArrays calls (one per texture group)
-// ─────────────────────────────────────────────────────────────────────────────
 function renderWorld() {
   if (g_currentLevel === LEVEL_SUBURBS) {
     renderSuburbWorld();
@@ -1159,13 +1030,9 @@ function renderWorldChunks() {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// getTargetCell — map cell directly in front of the camera (for door click)
-// ─────────────────────────────────────────────────────────────────────────────
 function getTargetCell(eyeX, eyeZ, fwdX, fwdZ) {
   const reach = 1.7;
   const tx = Math.floor(eyeX + fwdX * reach);
   const tz = Math.floor(eyeZ + fwdZ * reach);
   return [tx, tz];
 }
-

@@ -1,22 +1,9 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// main.js — The Backrooms: Entity Survival  (CSE 160 Assignment 3)
-//
-// Responsibilities:
-//   • WebGL init + shader compile
-//   • 4-texture batch world rendering with ceiling/floor
-//   • 60-second countdown, win (door) / lose (caught or timeout)
-//   • Entity AI + proximity audio + jumpscare flash
-//   • Pointer-lock mouse look (sign corrected: no inversion)
-//   • WASD movement, axis-split wall collision (A/D direction corrected)
-// ─────────────────────────────────────────────────────────────────────────────
 
-// ── WebGL globals ─────────────────────────────────────────────────────────
+
 var canvas, gl;
 
-// Attribute locations
 var a_Position, a_TexCoord, a_Normal;
 
-// uniform locations
 var u_ModelMatrix, u_ViewMatrix, u_ProjectionMatrix;
 var u_whichTexture, u_texColorWeight, u_baseColor;
 var u_time;
@@ -24,11 +11,10 @@ var u_lightPosArr;
 var u_numLights;
 var u_flickerEnabled;
 var u_isBackrooms;
-var u_emissive;             // bool flag for self-lit pieces (tv screen)
+var u_emissive;
 var u_fogNear, u_fogFar, u_fogColor;
 var u_Sampler0, u_Sampler1, u_Sampler2, u_Sampler3, u_Sampler5;
 
-// game state
 var camera;
 var g_keys     = {};
 var g_ignoreNextMouseMove = false;
@@ -36,17 +22,16 @@ const MOUSE_EVENT_DELTA_CAP = 20;
 const MOUSE_FRAME_DELTA_CAP = 28;
 const MOUSE_PENDING_DELTA_CAP = 56;
 var g_pendingMouseX = 0, g_pendingMouseY = 0;
-// length of a single round before the entity speeds up and the timer resets.
-// (was 180 = 3 min; using 120 to match the user's "2 minutes" wording.)
+
 const ROUND_SECONDS  = 120.0;
 var g_timer    = ROUND_SECONDS;
-var g_round    = 1;            // increments on every timer wrap
+var g_round    = 1;
 var g_gameOver = false;
 var g_gameWon  = false;
-var g_paused   = false;        // toggled by ESC
+var g_paused   = false;
 var g_speedrunTime = 0;
 var g_speedrunFinished = false;
-var g_dimTimer = 0;            // seconds left in post-round lights-off effect
+var g_dimTimer = 0;
 var g_performanceMode = false;
 const PERFORMANCE_RENDER_SCALE = 0.40;
 const SUBURB_FOG_NEAR = 4.0;
@@ -57,86 +42,64 @@ const BACKROOMS_FOG_NEAR = 1.8;
 const BACKROOMS_FOG_FAR = 14.0;
 const BACKROOMS_PERF_FOG_NEAR = 1.0;
 const BACKROOMS_PERF_FOG_FAR = 8.5;
-var g_SuburbTexObjs = {};      // dynamic sampler5 textures for Level 1
-var g_LevelModelMeshes = {};   // OBJ meshes for Level 1 models (fence)
-var g_suppressPointerPause = false; // narrative overlays can release pointer lock
+var g_SuburbTexObjs = {};
+var g_LevelModelMeshes = {};
+var g_suppressPointerPause = false;
 
-// global multiplier on the entity's base speed. resets to 1 each new game,
-// grows by ENTITY_SPEEDUP_PER_ROUND every time the round timer reaches 0.
 var g_entitySpeedMult = 1.0;
 const ENTITY_SPEEDUP_PER_ROUND = 0.20;
 
-// master volume slider (0..1). multiplied into every audio source so the
-// pause-menu slider rebalances ambience + footsteps + chase + wail at once.
 var g_masterVolume = 1.0;
 
-// Sprint stamina — 1.0 = full, drains while Shift is held + moving, regens otherwise
 var g_sprint        = 1.0;
-const SPRINT_DRAIN  = 0.32;   // per second while sprinting
-const SPRINT_REGEN  = 0.18;   // per second while not sprinting
-const SPRINT_MIN    = 0.08;   // can't initiate sprint below this
-const SPRINT_MULT   = 1.7;    // speed multiplier while sprinting
+const SPRINT_DRAIN  = 0.32;
+const SPRINT_REGEN  = 0.18;
+const SPRINT_MIN    = 0.08;
+const SPRINT_MULT   = 1.7;
 var  g_isSprinting  = false;
-// Once stamina drops to 0 the bar locks out: it slowly recharges to 100%
-// and only then can the player sprint again. The HUD bar flashes slowly
-// while locked to communicate the cooldown.
+
 var  g_sprintLocked = false;
 
-// Game doesn't truly start — timer + entity AI — until the player clicks
-// the canvas to enter pointer lock. Prevents the entity from killing them
-// during the "Click to enter" prompt.
 var g_started = false;
-// Timing
+
 var g_lastFrameMs = 0;
 var g_lastFpsMs   = 0;
 var g_frameMsSmoothed = 16.7;
 var g_seconds     = 0;
 
-// Audio
 var g_audioCtx      = null;
 var g_proximityGain = null;
-var g_ambienceEl    = null;   // <audio> for backrooms ambience (loops while playing)
-var g_chaseEl       = null;   // <audio> for chase loop
-// Footstep WebAudio buffers (decoded once)
-var g_smallFootBufs = [];     // small1..4.wav (player)
-var g_bigFootBufs   = [];     // big1..5.wav (entity)
-var g_wailBuf       = null;   // wail.wav
-// Step timers
+var g_ambienceEl    = null;
+var g_chaseEl       = null;
+
+var g_smallFootBufs = [];
+var g_bigFootBufs   = [];
+var g_wailBuf       = null;
+
 var g_playerStepCD  = 0;
 var g_entityStepCD  = 0;
 var g_lastEntityX   = 0;
 var g_lastEntityZ   = 0;
-var g_wailCD        = 0;      // cooldown so wail doesn't spam
+var g_wailCD        = 0;
 
-// User settings (from title screen checkbox)
 var g_flickerEnabled = true;
 
-// Camera bob — modulates eye Y while player is walking
-var g_walkPhase   = 0;        // accumulates while moving
-const BOB_AMP     = 0.045;    // metres up/down at peak
-const BOB_FREQ    = 8.4;      // rad/sec — steps/sec is BOB_FREQ/(2π)·2 ≈ 2.7
+var g_walkPhase   = 0;
+const BOB_AMP     = 0.045;
+const BOB_FREQ    = 8.4;
 var  g_baseEyeY   = 1.62;
 
-// Fog/background colour — warm tan instead of green-yellow.
 const FOG_R = 0.72, FOG_G = 0.56, FOG_B = 0.34;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Audio mix — tweak these to rebalance everything in one place.
-// All values are 0–1 multiplied by the per-event base level.
-// ─────────────────────────────────────────────────────────────────────────────
-const VOL_AMBIENCE        = 1.0;   // looping room tone
-const VOL_CHASE_MAX       = 0.45;   // chase loop volume when entity has LOS
-const VOL_WAIL            = 0.32;   // one-shot wail when entity sees player
-const VOL_FOOTSTEP_PLAYER = 0.32;   // small1–4 footsteps under the player
-const VOL_FOOTSTEP_ENTITY = 0.55;   // big1–5 footsteps near entity (×distance falloff)
-const FOOTSTEP_ENTITY_RANGE = 28;   // metres to fade entity footsteps to silence
-const WAIL_RANGE            = 22;   // only wail when player is closer than this
-const WAIL_COOLDOWN_SEC     = 7.0;  // min seconds between wails
+const VOL_AMBIENCE        = 1.0;
+const VOL_CHASE_MAX       = 0.45;
+const VOL_WAIL            = 0.32;
+const VOL_FOOTSTEP_PLAYER = 0.32;
+const VOL_FOOTSTEP_ENTITY = 0.55;
+const FOOTSTEP_ENTITY_RANGE = 28;
+const WAIL_RANGE            = 22;
+const WAIL_COOLDOWN_SEC     = 7.0;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// furniture toggles — set any to false to disable that model completely.
-// it won't load, won't spawn, and won't block the player.
-// ─────────────────────────────────────────────────────────────────────────────
 const ENABLE_chair  = true;
 const ENABLE_chair1 = true;
 const ENABLE_chair2 = true;
@@ -154,16 +117,10 @@ function isFurnitureKindEnabled(kind) {
   return FURNITURE_ENABLED[kind] !== false;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// goop tile settings
-// ─────────────────────────────────────────────────────────────────────────────
-const GOOP_FLOOR_CHANCE = 0.008; // ~0.8% of open floor cells get a goop decal
-const GOOP_WALL_CHANCE  = 0.006; // ~0.6% of eligible wall faces get a goop marking
-const GOOP_WRONG_CHANCE = 0.0;   // Exit guidance should be readable, not misleading
+const GOOP_FLOOR_CHANCE = 0.008;
+const GOOP_WALL_CHANCE  = 0.006;
+const GOOP_WRONG_CHANCE = 0.0;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// main — entry point
-// ─────────────────────────────────────────────────────────────────────────────
 function main() {
   canvas = document.getElementById('webgl');
   if (!canvas) { console.error('No canvas'); return; }
@@ -175,12 +132,10 @@ function main() {
     console.error('Shader compile failed'); return;
   }
 
-  // ── Attributes ───────────────────────────────────────────────────────────
   a_Position = gl.getAttribLocation(gl.program, 'a_Position');
   a_TexCoord = gl.getAttribLocation(gl.program, 'a_TexCoord');
   a_Normal   = gl.getAttribLocation(gl.program, 'a_Normal');
 
-  // ── Uniforms ──────────────────────────────────────────────────────────────
   u_ModelMatrix      = gl.getUniformLocation(gl.program, 'u_ModelMatrix');
   u_ViewMatrix       = gl.getUniformLocation(gl.program, 'u_ViewMatrix');
   u_ProjectionMatrix = gl.getUniformLocation(gl.program, 'u_ProjectionMatrix');
@@ -203,11 +158,9 @@ function main() {
   u_Sampler4         = gl.getUniformLocation(gl.program, 'u_Sampler4');
   u_Sampler5         = gl.getUniformLocation(gl.program, 'u_Sampler5');
 
-  // ── GL state ──────────────────────────────────────────────────────────────
   gl.clearColor(FOG_R, FOG_G, FOG_B, 1.0);
   gl.enable(gl.DEPTH_TEST);
 
-  // ── Persistent uniforms ───────────────────────────────────────────────────
   gl.uniform1i(u_Sampler0, 0);
   gl.uniform1i(u_Sampler1, 1);
   gl.uniform1i(u_Sampler2, 2);
@@ -215,20 +168,14 @@ function main() {
   gl.uniform1i(u_Sampler4, 4);
   gl.uniform1i(u_Sampler5, 5);
 
-  // flicker enabled by default. title screen checkbox can flip it.
   gl.uniform1i(u_flickerEnabled, 1);
   gl.uniform1i(u_isBackrooms, 0);
   gl.uniform1i(u_emissive, 0);
 
-  // Loose, deep fog so the player can never see across the 96×96 grid but
-  // can comfortably see ~25 units of corridor.  Far must stay below the
-  // longest-possible open run (capped to 14 by world.js obstruction pass
-  // → plenty of breathing room with far=28).
   gl.uniform1f(u_fogNear,  2.5);
   gl.uniform1f(u_fogFar,  20.0);
   gl.uniform3f(u_fogColor, FOG_R, FOG_G, FOG_B);
 
-  // ── Textures — user-supplied PNGs (with procedural fallbacks) ─────────
   loadTexture(gl.TEXTURE0, 'textures/wall.png',          'wall');
   loadTexture(gl.TEXTURE1, 'textures/ceiling_floor.png', 'ceiling_floor');
   loadTexture(gl.TEXTURE2, 'textures/light.png',         'light');
@@ -236,21 +183,17 @@ function main() {
   loadGoopTextures();
   loadSuburbTextures();
 
-  // ── World ─────────────────────────────────────────────────────────────────
   camera = new Camera(canvas);
   initWorldBuffers();
   initSingleCubeBuffer();
   loadLevel(1);
 
-  // entity model + animation
   initEntityModel();
   loadAnim('anim.json');
 
-  // furniture (chairs, sofa, tv). loaded async; renders show up once ready.
   loadFurnitureMeshes();
   loadLevelModelMeshes();
 
-  // input + audio
   setupInput();
   initAudio();
   if (typeof setupGameStateUI === 'function') setupGameStateUI();
@@ -260,9 +203,6 @@ function main() {
   requestAnimationFrame(tick);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// tick — per-frame update
-// ─────────────────────────────────────────────────────────────────────────────
 function tick(timestamp) {
   if (g_gameOver || g_gameWon) return;
 
@@ -270,8 +210,6 @@ function tick(timestamp) {
   const dt = Math.min(frameMs / 1000, 1 / 30);
   g_lastFrameMs = timestamp;
 
-  // when paused we still render the last frame and update fps, but skip
-  // anything time-driven (timer, entity ai, audio cues).
   if (!g_paused) {
     g_seconds += dt;
     if (g_started && !g_speedrunFinished) g_speedrunTime += dt;
@@ -280,7 +218,7 @@ function tick(timestamp) {
     const chaseActive = (typeof isBackroomsChaseActive === 'function') ? isBackroomsChaseActive() : g_started;
     if (g_started && chaseActive) {
       g_timer -= dt;
-      // round end: reset timer, bump entity speed, do not end game.
+
       if (g_timer <= 0) {
         g_round++;
         g_timer = ROUND_SECONDS;
@@ -309,14 +247,11 @@ function tick(timestamp) {
   requestAnimationFrame(tick);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// renderScene
-// ─────────────────────────────────────────────────────────────────────────────
 function renderScene() {
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   gl.uniformMatrix4fv(u_ViewMatrix,       false, camera.viewMatrix.elements);
   gl.uniformMatrix4fv(u_ProjectionMatrix, false, camera.projectionMatrix.elements);
-  // Brief lights-off during the round-transition banner ("HE WATCHES YOU")
+
   gl.uniform1i(u_numLights, g_dimTimer > 0 ? 0 : Math.min(g_LightPositions.length, 8));
   if (g_currentLevel === LEVEL_SUBURBS) drawSkybox();
   renderWorld();
@@ -347,9 +282,6 @@ function drawSkybox() {
   gl.depthMask(true);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// triggerLose / triggerWin
-// ─────────────────────────────────────────────────────────────────────────────
 function triggerLose() {
   if (g_gameOver || g_gameWon) return;
   g_gameOver = true;
@@ -388,8 +320,6 @@ function triggerWin() {
   document.getElementById('winScreen').classList.add('active');
 }
 
-// pause toggle. shows / hides #pauseScreen overlay and releases pointer
-// lock so the cursor is usable for clicking buttons.
 function togglePause() {
   g_paused = !g_paused;
   const ps = document.getElementById('pauseScreen');
@@ -404,8 +334,6 @@ function togglePause() {
   }
 }
 
-// brief on-screen banner when the round timer wraps and the entity gets
-// faster. uses the lockMsg div if present; otherwise just logs.
 function flashRoundBanner() {
   const el = document.getElementById('roundBanner');
   if (!el) {
@@ -419,11 +347,6 @@ function flashRoundBanner() {
   flashRoundBanner._t = setTimeout(() => el.classList.remove('show'), 1800);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// uploadLightPositions — push g_LightPositions (set in world.initMap)
-// into the GLSL `uniform vec3 u_lightPos[8]` array.  Pads unused slots
-// with zero positions; u_numLights tells the shader how many to honour.
-// ─────────────────────────────────────────────────────────────────────────────
 function uploadLightPositions() {
   const MAX = 8;
   const flat = new Float32Array(MAX * 3);
@@ -437,17 +360,8 @@ function uploadLightPositions() {
   gl.uniform1i(u_numLights, n);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// furniture system. each entry in g_FurnitureSlots names a 'kind' that
-// maps to a definition in FURNITURE_DEFS below: which OBJ file to load,
-// what colour to draw it as, target world height in metres, and whether
-// it is self-lit (the tv screen flickers).
-// rendered with the same shader as everything else, but with a solid
-// base colour (u_texColorWeight = 0). the OBJ vertex format already
-// matches the engine's interleaved layout courtesy of objLoader.parseOBJ.
-// ─────────────────────────────────────────────────────────────────────────────
 const FURNITURE_DEFS = {
-  // chairs (variety pack from soppy prisma + the alexdizz Chair model)
+
   chair:      { file: 'models/Chair.obj',     color: [0.30, 0.20, 0.12, 1.0], height: 1.10, emissive: false },
   chair1:     { file: 'models/chair1.obj',    color: [0.32, 0.22, 0.14, 1.0], height: 1.10, emissive: false },
   chair2:     { file: 'models/chair2.obj',    color: [0.28, 0.18, 0.10, 1.0], height: 1.10, emissive: false },
@@ -455,8 +369,6 @@ const FURNITURE_DEFS = {
   chair4:     { file: 'models/chair4.obj',    color: [0.30, 0.20, 0.12, 1.0], height: 1.10, emissive: false },
 };
 
-// per-kind GPU + scale info, populated asynchronously by loadFurnitureMeshes.
-//   { buffer, vertCount, scale, offsetX, offsetY, offsetZ }
 var g_furnitureMeshes = {};
 
 function isDrawPointVisible(x, z, radius) {
@@ -471,15 +383,13 @@ function isDrawPointVisible(x, z, radius) {
   return dx * dx + dz * dz <= limit * limit;
 }
 
-// goop tile decals
-var g_goopFloorCells = new Map(); // "x,z" -> texName
-var g_goopWallFaces  = new Map(); // "wx,wz,face,y" -> texName
-var g_goopBatches    = [];        // [{texName, buffer, vertCount}]
-var g_goopChunks     = [];        // [{centerX, centerZ, radius, batches}]
-var u_Sampler4 = null;    // uniform location for goop texture
-var g_GoopTexObjs = {};   // filename -> WebGL texture object
+var g_goopFloorCells = new Map();
+var g_goopWallFaces  = new Map();
+var g_goopBatches    = [];
+var g_goopChunks     = [];
+var u_Sampler4 = null;
+var g_GoopTexObjs = {};
 
-// floor-only goop textures (all goop_ that are NOT goop_wall_)
 const GOOP_FLOOR_TEXTURES = [
   'goop_arrow.png', 'goop_arrow_down.png', 'goop_arrow_left.png',
   'goop_arrow_left_down.png', 'goop_arrow_left_up.png',
@@ -492,14 +402,14 @@ const GOOP_FLOOR_TEXTURES = [
 ];
 const GOOP_WALL_LEFT_TEXTURES  = ['goop_wall_left_1.png',  'goop_wall_left_2.png',  'goop_wall_left_3.png'];
 const GOOP_WALL_RIGHT_TEXTURES = ['goop_wall_right_1.png', 'goop_wall_right_2.png', 'goop_wall_right_3.png'];
-// Non-directional wall decorations (brushes, crosses, splatters).
+
 const GOOP_WALL_DECOR_TEXTURES = [
   'goop_wall_brush_1.png',    'goop_wall_brush_2.png',    'goop_wall_brush_3.png',
   'goop_wall_cross_1.png',    'goop_wall_cross_2.png',    'goop_wall_cross_3.png',    'goop_wall_cross_4.png',
   'goop_wall_splatter_1.png', 'goop_wall_splatter_2.png', 'goop_wall_splatter_3.png',
   'goop_wall_splatter_4.png', 'goop_wall_splatter_5.png',
 ];
-// Non-arrow floor decals — used for the ~45 % of floor goop that isn’t an arrow.
+
 const GOOP_FLOOR_DECORS = [
   'goop_cross_1.png', 'goop_cross_2.png', 'goop_cross_3.png',
   'goop_splatter.png', 'goop_splatter_1.png', 'goop_splatter_2.png',
@@ -509,7 +419,7 @@ const GOOP_FLOOR_DECORS = [
 
 function loadFurnitureMeshes() {
   for (const kind of Object.keys(FURNITURE_DEFS)) {
-    // skip kinds whose toggle is false
+
     if (!isFurnitureKindEnabled(kind)) continue;
     const def = FURNITURE_DEFS[kind];
     fetch(def.file)
@@ -518,8 +428,6 @@ function loadFurnitureMeshes() {
         const verts = parseOBJ(txt);
         if (!verts) { console.warn('[furniture] parse failed:', kind); return; }
 
-        // bounding box -> uniform scale to fit the requested world height,
-        // and X/Z centring offset (Y left as min so the piece sits on the floor).
         let minX = Infinity, minY = Infinity, minZ = Infinity;
         let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
         for (let i = 0; i < verts.length; i += 8) {
@@ -555,7 +463,7 @@ function drawFurniture() {
   if (!drawFurniture._matrix) drawFurniture._matrix = new Matrix4();
   const m = drawFurniture._matrix;
   for (const slot of g_FurnitureSlots) {
-    // skip if this kind was disabled
+
     if (!isFurnitureKindEnabled(slot.kind)) continue;
     if (!isDrawPointVisible(slot.x, slot.z, 1.2)) continue;
     const mesh = g_furnitureMeshes[slot.kind];
@@ -582,15 +490,10 @@ function drawFurniture() {
     gl.enableVertexAttribArray(a_Normal);
     gl.drawArrays(gl.TRIANGLES, 0, mesh.vertCount);
   }
-  // clear emissive flag so subsequent draws (entity, world) aren't affected.
+
   gl.uniform1i(u_emissive, 0);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Level model system — currently used for the custom fence OBJ in the suburb.
-// The OBJ is converted from its original Z-up coordinate system into the
-// engine's Y-up convention, then drawn as batched VBO instances.
-// ─────────────────────────────────────────────────────────────────────────────
 const LEVEL_MODEL_DEFS = {
   fence: { file: 'models/fence.obj', color: [0.62, 0.40, 0.22, 1.0] },
   weeds: { file: 'models/weeds.obj', color: [0.28, 0.70, 0.22, 1.0], convertZUp: false },
@@ -792,47 +695,34 @@ function drawLevelItems() {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// goop tile decals — goop textures placed on floor and wall tiles,
-// rendered with the same lighting/fog as normal geometry.
-// Transparent PNG areas let the underlying floor/wall show through.
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Maps open-cell neighbour direction → the face enum on the WALL CELL
-// that is visible from the open cell (matches buildWorldGeometry face push logic).
 const GOOP_WALL_NEIGHBORS = [
-  { dcx:  0, dcz: -1, wallFace: FACE_FRONT },  // wall to -Z, its +Z face shows
-  { dcx:  0, dcz: +1, wallFace: FACE_BACK  },  // wall to +Z, its -Z face shows
-  { dcx: -1, dcz:  0, wallFace: FACE_RIGHT },  // wall to -X, its +X face shows
-  { dcx: +1, dcz:  0, wallFace: FACE_LEFT  },  // wall to +X, its -X face shows
+  { dcx:  0, dcz: -1, wallFace: FACE_FRONT },
+  { dcx:  0, dcz: +1, wallFace: FACE_BACK  },
+  { dcx: -1, dcz:  0, wallFace: FACE_RIGHT },
+  { dcx: +1, dcz:  0, wallFace: FACE_LEFT  },
 ];
 
-// ─────────────────────────────────────────────────────────────────────────────
-// getFloorArrowTex — pick the floor arrow texture that points from (fx, fz)
-// toward the exit door.  Floor UV mapping: U = +X, V = +Z (after FLIP_Y),
-// so image-up = world +Z (south) and image-right = world +X (east).
-// ─────────────────────────────────────────────────────────────────────────────
 function getFloorArrowTex(fx, fz, wrong) {
   let dx = DOOR_CELL_X + 0.5 - fx;
   let dz = DOOR_CELL_Z + 0.5 - fz;
-  if (wrong) { dx = -dx; dz = -dz; }          // wrong: point away from door
+  if (wrong) { dx = -dx; dz = -dz; }
   return getFloorArrowTexForDelta(dx, dz);
 }
 
 function getFloorArrowTexForDelta(dx, dz) {
-  const angle  = Math.atan2(dz, dx);           // 0=E, π/2=S, ±π=W, -π/2=N
+  const angle  = Math.atan2(dz, dx);
   const sector = Math.round(angle / (Math.PI / 4));
   const dirs   = ['e','se','s','sw','w','nw','n','ne'];
   const dir    = dirs[((sector % 8) + 8) % 8];
   const tmap   = {
-    e:  'goop_arrow_right.png',       // → +X
-    se: 'goop_arrow_right_up.png',    // → +X, +Z
-    s:  'goop_arrow_up.png',          // → +Z
-    sw: 'goop_arrow_left_up.png',     // → −X, +Z
-    w:  'goop_arrow_left.png',        // → −X
-    nw: 'goop_arrow_left_down.png',   // → −X, −Z
-    n:  'goop_arrow_down.png',        // → −Z
-    ne: 'goop_arrow_right_down.png',  // → +X, −Z
+    e:  'goop_arrow_right.png',
+    se: 'goop_arrow_right_up.png',
+    s:  'goop_arrow_up.png',
+    sw: 'goop_arrow_left_up.png',
+    w:  'goop_arrow_left.png',
+    nw: 'goop_arrow_left_down.png',
+    n:  'goop_arrow_down.png',
+    ne: 'goop_arrow_right_down.png',
   };
   return tmap[dir];
 }
@@ -865,7 +755,6 @@ function assignGoopTiles() {
     for (let z = 0; z < MAP_SIZE; z++) {
       if (g_Map[x][z] !== 0) continue;
 
-      // floor goop — 55% directional arrow pointing toward exit, 45% decorative
       if (rng() < GOOP_FLOOR_CHANCE) {
         let texName;
         if (rng() < 0.55) {
@@ -876,7 +765,6 @@ function assignGoopTiles() {
         g_goopFloorCells.set(x + ',' + z, texName);
       }
 
-      // wall face goop
       for (const nb of GOOP_WALL_NEIGHBORS) {
         const wx = x + nb.dcx, wz = z + nb.dcz;
         if (wx < 0 || wz < 0 || wx >= MAP_SIZE || wz >= MAP_SIZE) continue;
@@ -885,10 +773,10 @@ function assignGoopTiles() {
 
         let tex;
         if (rng() < 0.45) {
-          // Non-directional decoration (brush stroke, cross, splatter)
+
           tex = GOOP_WALL_DECOR_TEXTURES[Math.floor(rng() * GOOP_WALL_DECOR_TEXTURES.length)];
         } else {
-          // Directional arrow: left or right based on tangent toward exit
+
           const tangX = (nb.dcz !== 0) ? 1 : 0;
           const tangZ = (nb.dcx !== 0) ? 1 : 0;
           const dot   = (DOOR_CELL_X + 0.5 - (x + 0.5)) * tangX
@@ -971,8 +859,7 @@ function drawGoopWorld() {
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   gl.depthMask(false);
-  // push goop fragments slightly toward the camera so they win the depth
-  // test against co-planar floor/wall geometry (prevents z-fighting)
+
   gl.enable(gl.POLYGON_OFFSET_FILL);
   gl.polygonOffset(-1.0, -1.0);
 
@@ -1054,29 +941,20 @@ function drawExitDoorMarker() {
   gl.uniform4f(u_baseColor, 1.0, 1.0, 1.0, 1.0);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// initAudio — just sets up an AudioContext for the file-based one-shots.
-// All previously-synthesised hum / proximity sawtooth has been removed; the
-// recorded ambience track and footstep WAVs replace it entirely.
-// ─────────────────────────────────────────────────────────────────────────────
 function initAudio() {
   try {
     g_audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   } catch (e) { console.log('Audio unavailable:', e.message); }
 }
 
-function updateProximityAudio(_dist) { /* no-op — retained for HUD callsite */ }
+function updateProximityAudio(_dist) {  }
 
 function clampAudioVolume(value) {
   return Math.max(0, Math.min(1, value || 0));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// initAudioFiles — load ambience + footstep WAVs once user gesture
-// has unlocked AudioContext. Called from the title-screen ENTER button.
-// ─────────────────────────────────────────────────────────────────────────────
 function initAudioFiles() {
-  // (1) Ambience — looping <audio> at a quiet level so it sits under everything.
+
   try {
     g_ambienceEl = new Audio('audio/626096__resaural__backrooms-ambience.wav');
     g_ambienceEl.loop   = true;
@@ -1085,14 +963,12 @@ function initAudioFiles() {
     if (p && p.catch) p.catch(err => console.log('ambience play blocked:', err.message));
   } catch (e) { console.log('ambience unavailable:', e.message); }
 
-  // (2) Chase loop — starts paused, played when entity has LOS.
   try {
     g_chaseEl = new Audio('audio/chase.wav');
     g_chaseEl.loop   = true;
-    g_chaseEl.volume = 0.0;   // fades in when LOS
+    g_chaseEl.volume = 0.0;
   } catch (e) { console.log('chase audio unavailable:', e.message); }
 
-  // (3) Footstep + wail buffers via WebAudio for low-latency one-shots.
   if (!g_audioCtx) return;
   function loadBuf(url) {
     return fetch(url).then(r => r.arrayBuffer())
@@ -1106,7 +982,6 @@ function initAudioFiles() {
   loadBuf('audio/wail.wav').then(b => { g_wailBuf = b; });
 }
 
-// Play a one-shot WebAudio buffer at a given gain.
 function playBuf(buf, gainVal) {
   if (!buf || !g_audioCtx) return;
   const src = g_audioCtx.createBufferSource();
@@ -1117,17 +992,14 @@ function playBuf(buf, gainVal) {
   src.start();
 }
 
-// Update entity-side audio: distance-scaled footsteps + wail/chase on LOS.
 function updateEntityAudio(dt) {
   if (!g_audioCtx) return;
   const dist = getEntityDist();
 
-  // Entity footsteps: only play while it's actually moving.  Cadence speeds
-  // up when the entity is in chase mode (LOS).  Volume fades with distance.
   if (g_entity && (g_entity.vx !== 0 || g_entity.vz !== 0)) {
     g_entityStepCD -= dt;
     if (g_entityStepCD <= 0 && g_bigFootBufs.length > 0) {
-      // chase cadence is much snappier so the player can hear it gaining.
+
       const stride = g_entity.inChase ? 0.30 : 0.62;
       g_entityStepCD = stride;
       const idx = Math.floor(Math.random() * g_bigFootBufs.length);
@@ -1136,20 +1008,18 @@ function updateEntityAudio(dt) {
     }
   }
 
-  // Wail — plays once per LOS "event" (cooldown WAIL_COOLDOWN_SEC)
   g_wailCD -= dt;
   if (g_entity && g_entity.hasLOS && g_wailCD <= 0 && dist < WAIL_RANGE) {
     g_wailCD = WAIL_COOLDOWN_SEC;
     playBuf(g_wailBuf, VOL_WAIL * g_masterVolume);
   }
 
-  // chase loop volume crossfade based on LOS
   if (g_chaseEl) {
     const targetVol = (g_entity && g_entity.hasLOS) ? VOL_CHASE_MAX * g_masterVolume : 0.0;
     if (targetVol > 0.01 && g_chaseEl.paused) {
       g_chaseEl.play().catch(()=>{});
     }
-    // Simple linear approach
+
     const cur = g_chaseEl.volume;
     const step = dt * 0.6;
     g_chaseEl.volume = Math.max(0, Math.min(1,
@@ -1161,27 +1031,21 @@ function updateEntityAudio(dt) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Texture loading — applies procedural fallback immediately, replaces with
-// the real image if/when it loads.
-// ─────────────────────────────────────────────────────────────────────────────
 function loadTexture(texUnitEnum, src, fallbackType) {
   const tex = gl.createTexture();
   gl.activeTexture(texUnitEnum);
   gl.bindTexture(gl.TEXTURE_2D, tex);
 
-  // Upload fallback straight away so the scene is renderable immediately
   const fbCanvas = generateFallbackTexture(fallbackType);
-  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);  // canvas already in correct orientation
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, fbCanvas);
   applyTexParams(fbCanvas.width, fbCanvas.height);
 
-  // Attempt to load the real image asynchronously
   const img = new Image();
   img.onload = () => {
     gl.activeTexture(texUnitEnum);
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);   // PNGs need Y-flip for WebGL UV space
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
     applyTexParams(img.width, img.height);
   };
@@ -1246,7 +1110,6 @@ function applyTexParams(width, height) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, pot ? gl.REPEAT : gl.CLAMP_TO_EDGE);
 }
 
-// CLAMP_TO_EDGE params required for NPOT textures (all goop PNGs).
 function _goopTexParams() {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
@@ -1254,8 +1117,6 @@ function _goopTexParams() {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T,     gl.CLAMP_TO_EDGE);
 }
 
-// Load every goop PNG into its own WebGL texture object (keyed by filename).
-// We only ever bind them to unit 4 at draw time, so no unit conflict.
 function loadGoopTextures() {
   const allNames = [
     ...GOOP_FLOOR_TEXTURES,
@@ -1267,7 +1128,7 @@ function loadGoopTextures() {
     const tex = gl.createTexture();
     gl.activeTexture(gl.TEXTURE4);
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    // transparent 1×1 fallback: discarded by shader until real PNG loads
+
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
                   new Uint8Array([0, 0, 0, 0]));
     _goopTexParams();
@@ -1328,11 +1189,6 @@ function loadSuburbTextures() {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// generateFallbackTexture — procedural Backrooms-palette fallbacks (32×32).
-// Drawn pixel-by-pixel with putImageData so they stay crisp under NEAREST.
-// Real PNGs in textures/ replace these once they load.
-// ─────────────────────────────────────────────────────────────────────────────
 function generateFallbackTexture(type) {
   const S   = 32;
   const cvs = document.createElement('canvas');
@@ -1350,9 +1206,7 @@ function generateFallbackTexture(type) {
   }
 
   switch (type) {
-    // Plain mid-grey wall panel. The shader will mix this 60/40 with a
-    // strong blue tint so the wall reads as washed-out, slightly cyan
-    // concrete — matching the user-supplied wall.png aesthetic.
+
     case 'wall': {
       for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
         const n    = noise(18);
@@ -1364,8 +1218,7 @@ function generateFallbackTexture(type) {
       }
       break;
     }
-    // Dirty brown carpet used for both floor AND ceiling (when no light
-    // tile is present). Heavy noise, occasional darker stains.
+
     case 'ceiling_floor': {
       for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
         const n     = noise(28);
@@ -1377,15 +1230,13 @@ function generateFallbackTexture(type) {
       }
       break;
     }
-    // Glowing fluorescent light tile — bright nearly-white centre with a
-    // dark bezel. Shader treats this texture as emissive (it ignores
-    // shadows + gets boosted by the flicker term).
+
     case 'light': {
       for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
-        // Bezel ring
+
         const onEdge = (x < 3 || x > 28 || y < 3 || y > 28);
         if (onEdge) { setpx(x, y, 60, 60, 64); continue; }
-        // Bright core, slight warm cast, faint vertical "tube" hot-bands
+
         const tube = ((x % 8) === 3 || (x % 8) === 4) ? 8 : 0;
         const r = 250 + tube;
         const g = 250 + tube;
@@ -1395,7 +1246,7 @@ function generateFallbackTexture(type) {
       break;
     }
     case 'door': {
-      // 16-px wood-grain door, scaled to 32 by repeating
+
       for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
         const n  = noise(12);
         const bx = (x === 0 || x === 15 || x === 16 || x === 31) ? -28 : 0;
@@ -1461,22 +1312,21 @@ function generateFallbackTexture(type) {
       }
       break;
     }
-    // goop fallback: dark green-ish arrow shape on transparent bg
-    // a simple right-pointing triangle so something is visible if goop_arrow.png is missing
+
     case 'goop': {
       const imgG = ctx.createImageData(S, S);
       const dG = imgG.data;
-      for (let i = 0; i < dG.length; i++) dG[i] = 0; // transparent
-      // draw a right-pointing arrow: shaft + head
+      for (let i = 0; i < dG.length; i++) dG[i] = 0;
+
       const setGpx = (x, y, r, g, b, a) => {
         if (x < 0 || x >= S || y < 0 || y >= S) return;
         const ii = (y * S + x) * 4;
         dG[ii]=r; dG[ii+1]=g; dG[ii+2]=b; dG[ii+3]=a;
       };
       const midY = Math.floor(S / 2);
-      // shaft: left half
+
       for (let x = 4; x < 20; x++) for (let dy = -3; dy <= 3; dy++) setGpx(x, midY+dy, 0, 180, 60, 255);
-      // arrowhead: right half, triangle
+
       for (let x = 20; x < 29; x++) {
         const spread = Math.floor((x - 20) * 0.85);
         for (let dy = -(8 - spread); dy <= (8 - spread); dy++) setGpx(x, midY+dy, 0, 180, 60, 255);
@@ -1492,9 +1342,6 @@ function generateFallbackTexture(type) {
   return cvs;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Input — keyboard + mouse
-// ─────────────────────────────────────────────────────────────────────────────
 function setupInput() {
   document.addEventListener('keydown', e => {
     const k = e.key.toLowerCase();
@@ -1506,9 +1353,7 @@ function setupInput() {
       else if (g_gs.signOpen && typeof closeBackroomsSign === 'function') closeBackroomsSign();
       return;
     }
-    // ESC: pause toggle. handled here (not letting browser's default
-    // pointer-lock release count as "intent to unpause") because the user
-    // wants ESC to be the explicit pause button.
+
     if (e.key === 'Escape') {
       if (g_started && !g_gameOver && !g_gameWon) {
         togglePause();
@@ -1526,10 +1371,6 @@ function setupInput() {
     if (e.key === 'Shift') g_keys['shift'] = false;
   });
 
-  // ── Pointer-lock mouse look ───────────────────────────────────────────────
-  // Pointer lock requested by canvas click — but the game itself only
-  // "starts" (timer + entity AI + audio) once the user has clicked ENTER
-  // on the title screen. That handler is wired in setupTitleScreen().
   canvas.addEventListener('click', () => {
     if (g_started) requestGamePointerLock();
   });
@@ -1543,7 +1384,7 @@ function setupInput() {
     if (locked) {
       g_ignoreNextMouseMove = true;
       document.addEventListener('mousemove', onMouseMove);
-      // re-entering pointer lock from the pause menu = unpause.
+
       if (g_paused) togglePause();
     } else {
       document.removeEventListener('mousemove', onMouseMove);
@@ -1551,16 +1392,13 @@ function setupInput() {
         g_suppressPointerPause = false;
         return;
       }
-      // pressing ESC inside pointer-lock fires this event but NOT a keydown
-      // (the browser eats it). so the cleanest "esc = pause" path is:
-      // "any time we lose pointer-lock during gameplay, treat it as pause".
+
       if (g_started && !g_paused && !g_gameOver && !g_gameWon) {
         togglePause();
       }
     }
   });
 
-  // ── Block interaction (mousedown, not click, to avoid pointer-lock click) ─
   canvas.addEventListener('mousedown', onMouseDown);
   canvas.addEventListener('contextmenu', e => e.preventDefault());
   window.addEventListener('blur', resetMouseDeltas);
@@ -1592,8 +1430,7 @@ function onMouseMove(e) {
   }
   const mx = Math.max(-MOUSE_EVENT_DELTA_CAP, Math.min(MOUSE_EVENT_DELTA_CAP, e.movementX || 0));
   const my = Math.max(-MOUSE_EVENT_DELTA_CAP, Math.min(MOUSE_EVENT_DELTA_CAP, e.movementY || 0));
-  // Accumulate deltas — applied once per frame in processInput to avoid
-  // sub-frame jitter from high-frequency mouse polling.
+
   g_pendingMouseX = Math.max(-MOUSE_PENDING_DELTA_CAP, Math.min(MOUSE_PENDING_DELTA_CAP, g_pendingMouseX + mx));
   g_pendingMouseY = Math.max(-MOUSE_PENDING_DELTA_CAP, Math.min(MOUSE_PENDING_DELTA_CAP, g_pendingMouseY + my));
 }
@@ -1738,9 +1575,6 @@ function getInteractionTargetCell() {
   return getTargetCell(eye[0], eye[2], fwd[0], fwd[2]);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Collision detection
-// ─────────────────────────────────────────────────────────────────────────────
 const PLAYER_RADIUS = 0.3;
 
 function isBlockedAt(x, z) {
@@ -1753,7 +1587,7 @@ function isBlockedAt(x, z) {
       if (isWorldBlockedCell(bx, bz)) return true;
     } else if (g_Map[bx][bz] > 0) return true;
   }
-  // furniture acts as a solid circular obstacle. only check enabled kinds.
+
   if (typeof g_FurnitureSlots !== 'undefined') {
     for (const f of g_FurnitureSlots) {
       if (!isFurnitureKindEnabled(f.kind)) continue;
@@ -1764,7 +1598,6 @@ function isBlockedAt(x, z) {
   return false;
 }
 
-// Try to move dx, dz with axis-split wall sliding
 function tryMove(dx, dz) {
   const e = camera.eye.elements;
   const nx = e[0] + dx, nz = e[2] + dz;
@@ -1775,10 +1608,8 @@ function tryMove(dx, dz) {
   camera.updateViewMatrix();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 function processInput(dt) {
-  // Apply accumulated mouse deltas once per frame (prevents sub-frame jitter
-  // from high-polling-rate mice applying many small increments between renders).
+
   const sensitivity = 0.12;
   const mx = Math.max(-MOUSE_FRAME_DELTA_CAP, Math.min(MOUSE_FRAME_DELTA_CAP, g_pendingMouseX));
   const my = Math.max(-MOUSE_FRAME_DELTA_CAP, Math.min(MOUSE_FRAME_DELTA_CAP, g_pendingMouseY));
@@ -1796,18 +1627,15 @@ function processInput(dt) {
     return;
   }
 
-  // —— Sprint stamina bookkeeping (must precede speed calc) ———————————————
-  // While locked out, sprinting is disabled regardless of input until the
-  // bar regenerates fully back to 1.0.
   const wantSprint = (g_keys['shift'] === true) && !g_sprintLocked && g_sprint > 0.0;
   const moving     = (g_keys['w'] || g_keys['a'] || g_keys['s'] || g_keys['d']);
-  // Edge case: can't START sprinting below SPRINT_MIN, but can keep going down to 0
+
   if (wantSprint && moving && (g_isSprinting || g_sprint > SPRINT_MIN)) {
     g_isSprinting = true;
     g_sprint = Math.max(0, g_sprint - SPRINT_DRAIN * dt);
     if (g_sprint <= 0) {
       g_isSprinting  = false;
-      g_sprintLocked = true;            // engage cooldown
+      g_sprintLocked = true;
     }
   } else {
     g_isSprinting = false;
@@ -1822,8 +1650,7 @@ function processInput(dt) {
   let dx = 0, dz = 0;
   if (g_keys['w']) { dx += fx * spd;  dz += fz * spd; }
   if (g_keys['s']) { dx -= fx * spd;  dz -= fz * spd; }
-  // A = screen-left = -right = (+fz, 0, -fx)
-  // D = screen-right = +right = (-fz, 0, +fx)
+
   if (g_keys['a']) { dx += fz * spd;  dz -= fx * spd; }
   if (g_keys['d']) { dx -= fz * spd;  dz += fx * spd; }
   if (dx !== 0 || dz !== 0) {
@@ -1833,9 +1660,6 @@ function processInput(dt) {
   if (g_keys['q']) camera.panLeft(rotSpd);
   if (g_keys['e']) camera.panRight(rotSpd);
 
-  // ── Walk-bob + player footstep audio ────────────────────────────────
-  // We modulate eye-Y by a small sine while moving (and lerp it back when
-  // stopped) and emit a small footstep WAV every full bob period.
   const e = camera.eye.elements;
   if (dx !== 0 || dz !== 0) {
     g_walkPhase += BOB_FREQ * dt * (g_isSprinting ? 1.4 : 1.0);
@@ -1847,16 +1671,13 @@ function processInput(dt) {
       playBuf(g_smallFootBufs[idx], VOL_FOOTSTEP_PLAYER * g_masterVolume);
     }
   } else {
-    // Lerp eye Y back to base so the bob smoothly settles
+
     e[1] += (g_baseEyeY - e[1]) * Math.min(1, dt * 8);
-    g_playerStepCD = 0;   // reset so first step plays immediately on next move
+    g_playerStepCD = 0;
   }
   camera.updateViewMatrix();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// HUD helpers
-// ─────────────────────────────────────────────────────────────────────────────
 function formatSpeedrunTime(seconds) {
   const totalCentis = Math.max(0, Math.floor(seconds * 100));
   const centis = totalCentis % 100;
@@ -1943,9 +1764,6 @@ function updateHUD() {
     }
   }
 
-  // Sprint gauge — cyan when full, fades to red as it depletes.
-  // When locked out (depleted, recharging), the bar pulses slowly between
-  // dim and bright red so the player sees they cannot sprint yet.
   const sprintFill = hud.sprintFill;
   if (sprintFill) {
     const sprintWidth = Math.round(g_sprint * 100) + '%';
@@ -1956,7 +1774,7 @@ function updateHUD() {
     let sprintBg;
     let sprintOpacity;
     if (g_sprintLocked) {
-      // Slow ~1.2 Hz pulse, opacity 0.35 ↔ 1.0
+
       const pulse = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(performance.now() * 0.0075));
       sprintBg = '#ff3030';
       sprintOpacity = pulse.toFixed(3);
@@ -2004,22 +1822,12 @@ function refreshFpsModeLabel() {
   fpsEl.textContent = base + getPerformanceHudSuffix();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// setupTitleScreen — wires the disclaimer/title overlay's ENTER button.
-// Click handler:
-//   - reads the "disable flickering" checkbox into g_flickerEnabled
-//   - hides the overlay
-//   - flips g_started so the timer + entity AI + canvas pointer-lock click
-//     handler all begin operating
-//   - kicks off ambience + footstep audio loading (requires user gesture)
-//   - immediately requests pointer lock for a seamless transition
-// ─────────────────────────────────────────────────────────────────────────────
 function setupTitleScreen() {
   const overlay = document.getElementById('titleScreen');
   const startBtn = document.getElementById('startBtn');
   const flickerCb = document.getElementById('disableFlicker');
   const perfCb = document.getElementById('performanceMode');
-  if (!overlay || !startBtn) return;   // graceful fallback if HTML not added
+  if (!overlay || !startBtn) return;
 
   if (perfCb) {
     perfCb.addEventListener('change', () => setPerformanceMode(perfCb.checked));
@@ -2041,8 +1849,7 @@ function setupTitleScreen() {
     try { if (g_audioCtx && g_audioCtx.state === 'suspended') g_audioCtx.resume(); }
     catch (e) { console.log('audio resume failed:', e.message); }
     try { initAudioFiles(); } catch (e) { console.log('audio init failed:', e.message); }
-    // Pointer lock can throw if the document isn't focused. Wrap so it can
-    // never block game start.
+
     try {
       const p = canvas.requestPointerLock();
       if (p && p.catch) p.catch(err => console.log('pointer lock blocked:', err.message));
@@ -2050,12 +1857,6 @@ function setupTitleScreen() {
   });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// setupFullscreen — wires the FULLSCREEN HUD button.
-// This is intentionally tab fullscreen instead of browser-native fullscreen:
-// browsers reserve Escape to leave native fullscreen, which conflicts with the
-// game's Escape-to-pause flow. We fill the current viewport with CSS instead.
-// ─────────────────────────────────────────────────────────────────────────────
 var g_origCanvasW = 0, g_origCanvasH = 0;
 var g_gameFullscreen = false;
 
@@ -2162,8 +1963,6 @@ function setupFullscreen() {
   applyCurrentCanvasSize();
 }
 
-// pause-menu wiring. resume button, flicker checkbox, master volume slider,
-// and a fullscreen toggle that mirrors the title-screen one.
 function setupPauseMenu() {
   const resumeBtn = document.getElementById('pauseResumeBtn');
   const flickerCb = document.getElementById('pauseFlickerCb');
@@ -2176,13 +1975,13 @@ function setupPauseMenu() {
     resumeBtn.addEventListener('click', e => {
       e.stopPropagation();
       if (g_paused) togglePause();
-      // re-grab pointer lock so the player drops straight back into gameplay
+
       try { canvas.requestPointerLock(); } catch (_) {}
     });
   }
 
   if (flickerCb) {
-    // sync the checkbox with the title-screen state on open
+
     flickerCb.checked = !g_flickerEnabled;
     flickerCb.addEventListener('change', () => {
       g_flickerEnabled = !flickerCb.checked;
@@ -2203,8 +2002,7 @@ function setupPauseMenu() {
       const v = (+volSlider.value) / 100;
       g_masterVolume = v;
       volLabel.textContent = volSlider.value + '%';
-      // <audio> element volumes need updating live (webaudio one-shots
-      // pick up the new value next time they fire).
+
       if (g_ambienceEl) {
         const inBackrooms = (typeof g_currentLevel !== 'undefined' && g_currentLevel === LEVEL_BACKROOMS);
         g_ambienceEl.volume = inBackrooms ? clampAudioVolume(VOL_AMBIENCE * v) : 0.0;
@@ -2222,5 +2020,4 @@ function setupPauseMenu() {
   }
 }
 
-// bootstrap. start everything once the DOM is ready.
 window.addEventListener('load', main);

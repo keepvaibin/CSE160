@@ -1,54 +1,36 @@
-// entity.js — Backrooms bacteria entity
-//
-// Pipeline:
-//   • initEntityModel()          — uploads a VBO per body part (head, body,
-//                                   arm_left, arm_right, leg_left, leg_right)
-//                                   plus a fallback VBO for the merged mesh.
-//   • updateEntity(dt)           — BFS-based maze pathfinding (recomputed once
-//                                   per second), with smooth per-frame steering
-//                                   toward the next path cell. Walls collide.
-//   • drawEntity(seconds)        — hierarchical render using a matrix stack;
-//                                   body is the root, the other 4 parts are
-//                                   children animated by animSystem.js.
-//   • getEntityDist()            — XZ distance to the player.
-// ─────────────────────────────────────────────────────────────────────────────
 
-const ENTITY_SPEED       = 2.4;     // base units/sec (player walk = 5.0)
-const ENTITY_BURST_MULT  = 1.20;    // speed bump when player is in line of sight
-const ENTITY_BURST_RANGE = 9.0;     // sightline distance for burst trigger
+
+const ENTITY_SPEED       = 2.4;
+const ENTITY_BURST_MULT  = 1.20;
+const ENTITY_BURST_RANGE = 9.0;
 const ENTITY_RADIUS  = 0.28;
-// Spawn anchors are filled in by initMap(); fall back to far-corner defaults.
+
 function _entitySpawnX() { return (typeof ENTITY_SPAWN_X !== 'undefined') ? ENTITY_SPAWN_X : 60.5; }
 function _entitySpawnZ() { return (typeof ENTITY_SPAWN_Z !== 'undefined') ? ENTITY_SPAWN_Z : 60.5; }
 
-// ── OBJ-space placement constants (from entity_model.js or fallback) ──────
 const E_OBJ_CX = (typeof ENTITY_OBJ_CX !== 'undefined') ? ENTITY_OBJ_CX : -0.124;
 const E_OBJ_CY = (typeof ENTITY_OBJ_CY !== 'undefined') ? ENTITY_OBJ_CY : -0.060;
 const E_OBJ_CZ = (typeof ENTITY_OBJ_CZ !== 'undefined') ? ENTITY_OBJ_CZ : -0.302;
 const E_OBJ_H  = (typeof ENTITY_OBJ_H  !== 'undefined') ? ENTITY_OBJ_H  : 19.789;
-// Scale model height to a noticeably tall figure (~2.4 game units —
-// taller than the player's eye height of 1.62 so it looms over you).
+
 const E_SCALE  = 2.4 / E_OBJ_H;
 
-// ── Per-part GPU state ────────────────────────────────────────────────────
-//   Each entry: { buffer: WebGLBuffer, vertCount: int }
-var g_entityParts = {};            // populated by initEntityModel
-var g_entityFallbackBuffer = null; // single-mesh fallback
+var g_entityParts = {};
+var g_entityFallbackBuffer = null;
 var g_entityFallbackCount  = 0;
 var g_entityLoaded         = false;
 
-// ── Runtime state ─────────────────────────────────────────────────────────
 var g_entity = {
   x: 60.5,
   z: 60.5,
-  yaw: 0,            // facing angle (radians); 0 = +Z
-  walkPhase: 0,      // accumulates while moving — drives anim cycle
+  yaw: 0,
+  walkPhase: 0,
   pathRecalcTimer: 0,
-  pathDir: null,     // grid: BFS next-step lookup g_pathDir[ix][iz] = [dx,dz]
-  // Per-frame state read by main.js for audio + chase logic
-  vx: 0, vz: 0,      // last frame's actual displacement (for footstep gating)
-  hasLOS: false,     // true when entity has unobstructed sight to player
-  inChase: false,    // true while burst-speed (LOS within range)
+  pathDir: null,
+
+  vx: 0, vz: 0,
+  hasLOS: false,
+  inChase: false,
 };
 
 var g_pathMapSize = 0;
@@ -86,11 +68,8 @@ function resetEntityPath() {
   g_pathTargetZ = -999;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// initEntityModel — upload all baked geometry to the GPU
-// ─────────────────────────────────────────────────────────────────────────────
 function initEntityModel() {
-  // Pull the spawn coords assigned by initMap (in world.js).
+
   g_entity.x = _entitySpawnX();
   g_entity.z = _entitySpawnZ();
 
@@ -102,9 +81,6 @@ function initEntityModel() {
     return { buffer: buf, vertCount: count };
   }
 
-  // Per-part VBOs (only created if entity_model.js declared them).
-  // NOTE: top-level `const` is NOT added to window, so we test the names
-  // directly via `typeof` and reference the binding by name (not via window).
   const partSources = [
     ['body',      typeof BODY_VERTS      !== 'undefined' ? BODY_VERTS      : null, typeof BODY_VERT_COUNT      !== 'undefined' ? BODY_VERT_COUNT      : 0],
     ['head',      typeof HEAD_VERTS      !== 'undefined' ? HEAD_VERTS      : null, typeof HEAD_VERT_COUNT      !== 'undefined' ? HEAD_VERT_COUNT      : 0],
@@ -117,7 +93,6 @@ function initEntityModel() {
     if (verts) g_entityParts[name] = upload(verts, count);
   }
 
-  // Fallback merged mesh
   if (typeof ENTITY_VERTS !== 'undefined') {
     const fb = upload(ENTITY_VERTS, ENTITY_VERT_COUNT);
     if (fb) { g_entityFallbackBuffer = fb.buffer; g_entityFallbackCount = fb.vertCount; }
@@ -128,9 +103,6 @@ function initEntityModel() {
               '| fallback verts:', g_entityFallbackCount);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Wall collision
-// ─────────────────────────────────────────────────────────────────────────────
 function _entityBlockedAt(x, z) {
   const r = ENTITY_RADIUS;
   for (const [cx, cz] of [[x+r,z+r],[x+r,z-r],[x-r,z+r],[x-r,z-r]]) {
@@ -138,7 +110,7 @@ function _entityBlockedAt(x, z) {
     if (bx < 0 || bx >= MAP_SIZE || bz < 0 || bz >= MAP_SIZE) return true;
     if (g_Map[bx][bz] > 0) return true;
   }
-  // furniture is also solid for the entity. only check enabled kinds.
+
   if (typeof g_FurnitureSlots !== 'undefined') {
     for (const f of g_FurnitureSlots) {
       if (typeof isFurnitureKindEnabled === 'function' && !isFurnitureKindEnabled(f.kind)) continue;
@@ -149,16 +121,6 @@ function _entityBlockedAt(x, z) {
   return false;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// BFS pathfinding (simple flow-field)
-// ─────────────────────────────────────────────────────────────────────────────
-//   Run BFS from the player's grid cell across all reachable open cells.
-//   For every visited cell store the (dx,dz) pointing toward the cell we came
-//   from — i.e., the next step toward the player.  The entity then queries
-//   this lookup at its current cell to choose its movement direction.
-//   Cost: O(MAP_SIZE^2), but the arrays are reused so the chase does not
-//   allocate thousands of tiny arrays during play.
-// ─────────────────────────────────────────────────────────────────────────────
 function _recomputePath() {
   _ensurePathBuffers();
   const eye = camera.eye.elements;
@@ -224,9 +186,6 @@ function _recomputePath() {
   return true;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// updateEntity — BFS-driven smooth chase
-// ─────────────────────────────────────────────────────────────────────────────
 function updateEntity(dt) {
   _ensurePathBuffers();
   const eye = camera.eye.elements;
@@ -243,7 +202,7 @@ function updateEntity(dt) {
 
   let tgtX, tgtZ;
   if (los) {
-    // Steer directly at player when we can see them — no grid snapping.
+
     tgtX = eye[0];
     tgtZ = eye[2];
   } else {
@@ -270,25 +229,19 @@ function updateEntity(dt) {
   const ndx = dx / dist;
   const ndz = dz / dist;
 
-  // The OBJ rest pose faces +X (its arm/leg pivots are spread along Z).
-  // We want the model to face the movement direction, so we use
-  // -atan2(ndz, ndx).  Walking +X → yaw 0 → model already facing +X.
-  // Walking +Z → yaw -90° → m.rotate rolls OBJ-X round to world +Z.
   const targetYaw = -Math.atan2(ndz, ndx);
   let dyaw = targetYaw - g_entity.yaw;
   while (dyaw >  Math.PI) dyaw -= 2 * Math.PI;
   while (dyaw < -Math.PI) dyaw += 2 * Math.PI;
   g_entity.yaw += Math.sign(dyaw) * Math.min(Math.abs(dyaw), 4.0 * dt);
 
-  // burst when the player is close AND in line of sight (no walls between)
   let speed = ENTITY_SPEED;
   const distToPlayer = getEntityDist();
   g_entity.inChase = (distToPlayer < ENTITY_BURST_RANGE && los);
   if (g_entity.inChase) {
     speed *= ENTITY_BURST_MULT;
   }
-  // round-based speed-up: every time the timer wraps in main.js,
-  // g_entitySpeedMult grows by 20%. entity gets relentlessly faster.
+
   if (typeof g_entitySpeedMult !== 'undefined') {
     speed *= g_entitySpeedMult;
   }
@@ -308,8 +261,6 @@ function updateEntity(dt) {
   if (moved) g_entity.walkPhase += dt;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────// _hasLineOfSightToPlayer — cheap grid raycast (DDA) from entity to camera
-// ───────────────────────────────────────────────────────────────────────────────
 function _hasLineOfSightToPlayer() {
   const eye = camera.eye.elements;
   const x0 = g_entity.x,     z0 = g_entity.z;
@@ -329,8 +280,6 @@ function _hasLineOfSightToPlayer() {
   return true;
 }
 
-// ───────────────────────────────────────────────────────────────────────────────// getEntityDist — Euclidean XZ distance to camera
-// ─────────────────────────────────────────────────────────────────────────────
 function getEntityDist() {
   const eye = camera.eye.elements;
   const dx  = eye[0] - g_entity.x;
@@ -338,24 +287,7 @@ function getEntityDist() {
   return Math.sqrt(dx*dx + dz*dz);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// drawEntity — hierarchical rendering with a manual matrix stack
-// ─────────────────────────────────────────────────────────────────────────────
-//   Hierarchy:           body (root)
-//                       /  |  |  |  \
-//                    head arm arm leg leg
-//
-//   Pipeline per frame:
-//     1. Build the world transform M_world that places the entity in the
-//        scene (yaw, scale, OBJ centering).
-//     2. Get body's animated local matrix from animSystem → M_body.
-//     3. Push M_world; multiply by M_body; draw body geometry.
-//     4. For each child: push, multiply parent by child's animated matrix,
-//        draw child geometry, pop.
-//     5. Pop the body matrix.
-// ─────────────────────────────────────────────────────────────────────────────
-
-const E_MESH_COLOR = [0.06, 0.22, 0.04, 1.0];   // dark fleshy green
+const E_MESH_COLOR = [0.06, 0.22, 0.04, 1.0];
 var g_entityWorldMatrix = new Matrix4();
 var g_entityBodyLocalMatrix = new Matrix4();
 var g_entityBodyMatrix = new Matrix4();
@@ -382,37 +314,31 @@ function _drawMesh(part) {
   if (p) gl.drawArrays(gl.TRIANGLES, 0, p.vertCount);
 }
 
-// World-placement matrix (entity position, yaw, scale, centering).
-// Vertices in the OBJ are Y-up, feet at Y=0 (height ≈ 19.79 OBJ units).
 function _entityWorldMatrix() {
   const yawDeg = g_entity.yaw * (180 / Math.PI);
   const m = g_entityWorldMatrix.setIdentity();
   m.translate(g_entity.x, 0.0, g_entity.z);
   m.rotate(yawDeg, 0, 1, 0);
   m.scale(E_SCALE, E_SCALE, E_SCALE);
-  // Centre X/Z so the model stands at (g_entity.x, g_entity.z); leave feet at 0.
+
   m.translate(-E_OBJ_CX, -E_OBJ_CY, -E_OBJ_CZ);
   return m;
 }
 
 function _drawEntityHierarchical(seconds) {
-  // `seconds` keeps head/body twitching even when stationary (creepier);
-  // walkPhase would freeze the loop while idle.
+
   const t = seconds;
 
   const M_world = _entityWorldMatrix();
 
-  // Set shader state shared by all parts
   gl.uniform1f(u_texColorWeight, 0.0);
   gl.uniform4fv(u_baseColor, E_MESH_COLOR);
 
-  // ── BODY (root) ─────────────────────────────────────────────────────────
   const M_body_local = getInterpolatedTransformInto('body', t, g_entityBodyLocalMatrix);
   const M_body = g_entityBodyMatrix.set(M_world).multiply(M_body_local);
   gl.uniformMatrix4fv(u_ModelMatrix, false, M_body.elements);
   _drawMesh('body');
 
-  // ── Children of body ────────────────────────────────────────────────────
   for (const child of ENTITY_CHILDREN) {
     const M_child_local = getInterpolatedTransformInto(child, t, g_entityChildLocalMatrix);
     const M_child = g_entityChildMatrix.set(M_body).multiply(M_child_local);
@@ -421,7 +347,6 @@ function _drawEntityHierarchical(seconds) {
   }
 }
 
-// Single-mesh fallback (used until all 6 part VBOs + anim.json are loaded)
 function _drawEntityFallback() {
   if (!g_entityFallbackBuffer) return;
   const yawDeg = g_entity.yaw * (180 / Math.PI);
@@ -446,9 +371,6 @@ function _drawEntityFallback() {
   gl.drawArrays(gl.TRIANGLES, 0, g_entityFallbackCount);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// drawEntity — public entry point
-// ─────────────────────────────────────────────────────────────────────────────
 function drawEntity(seconds) {
   const haveAllParts = ['body','head','arm_left','arm_right','leg_left','leg_right']
                          .every(p => g_entityParts[p]);

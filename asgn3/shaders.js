@@ -1,16 +1,4 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// shaders.js — GLSL source strings for The Backrooms: Entity Survival
-//
-// Vertex shader: MVP transform, passes world-pos/UV/normal/dist to fragment.
-// Fragment shader:
-//   • 4 texture groups: 0=wall (blue-tinted), 1=ceiling/floor, 2=light tile
-//                       (emissive), 3=door
-//   • Up to 8 point lights — placed by world.js at every "fixture" cell
-//   • Per-fixture flicker (sine hum + hash noise + rare dropouts), with a
-//     uniform toggle (u_flickerEnabled) for accessibility
-//   • Sickly yellow distance fog (depth-based; v_Dist = -viewPos.z)
-//   • Solid-color mode for the entity
-// ─────────────────────────────────────────────────────────────────────────────
+
 
 var VSHADER_SOURCE = `
 attribute vec4 a_Position;
@@ -43,43 +31,35 @@ precision mediump float;
 
 #define MAX_LIGHTS 8
 
-// ── Texture samplers (4 groups) ───────────────────────────────────────────
-uniform sampler2D u_Sampler0;  // walls         (wall.png)
-uniform sampler2D u_Sampler1;  // floor+ceiling (ceiling_floor.png)
-uniform sampler2D u_Sampler2;  // ceiling light (light.png — emissive tile)
-uniform sampler2D u_Sampler3;  // door          (oak door)
-uniform sampler2D u_Sampler4;  // goop decals   (goop_arrow.png etc.)
-uniform sampler2D u_Sampler5;  // suburb dynamic textures (road/lawn/house/garden)
+uniform sampler2D u_Sampler0;
+uniform sampler2D u_Sampler1;
+uniform sampler2D u_Sampler2;
+uniform sampler2D u_Sampler3;
+uniform sampler2D u_Sampler4;
+uniform sampler2D u_Sampler5;
 
-// ── Rendering mode ────────────────────────────────────────────────────────
-uniform int   u_whichTexture;    // 0-3: selects sampler
-uniform float u_texColorWeight;  // 0.0 = solid baseColor, 1.0 = texture
+uniform int   u_whichTexture;
+uniform float u_texColorWeight;
 uniform vec4  u_baseColor;
 
-// ── Time + flicker control ────────────────────────────────────────────────
 uniform float u_time;
-uniform int   u_flickerEnabled;  // 1 = flicker, 0 = steady (accessibility)
-uniform int   u_isBackrooms;     // 1 = Backrooms fluorescent behavior, 0 = steady suburbs
-// when 1, output is treated as self-lit (used for the tv screen)
+uniform int   u_flickerEnabled;
+uniform int   u_isBackrooms;
+
 uniform int   u_emissive;
 
-// ── Point lights (variable-length, max MAX_LIGHTS) ────────────────────────
 uniform int  u_numLights;
 uniform vec3 u_lightPos[MAX_LIGHTS];
 
-// ── Fog ───────────────────────────────────────────────────────────────────
 uniform float u_fogNear;
 uniform float u_fogFar;
 uniform vec3  u_fogColor;
 
-// ── Varyings ──────────────────────────────────────────────────────────────
 varying vec2  v_TexCoord;
 varying vec3  v_Normal;
 varying vec3  v_WorldPos;
 varying float v_Dist;
 
-// One point-light contribution (attenuation + diffuse, slightly softer
-// quadratic falloff so lights fade out within ~20 units = one fog-far away).
 float pointLight(vec3 lPos, vec3 nrm) {
   vec3  toL  = lPos - v_WorldPos;
   float dist = length(toL);
@@ -88,33 +68,23 @@ float pointLight(vec3 lPos, vec3 nrm) {
   return att * (0.40 + 0.60 * dif);
 }
 
-// Cheap pseudo-random hash for the noise flicker.
 float hash12(vec2 p) {
   p = fract(p * vec2(443.8975, 397.2973));
   p += dot(p, p + 19.19);
   return fract(p.x * p.y);
 }
 
-// Per-fixture intensity in [0, 1.3].
-//   base  : steady-state output
-//   speed : sine-hum rate
-//   id    : per-fixture seed for the noise/dropout terms
-//
-// When u_flickerEnabled == 0 we return 'base' flat (still scales lighting,
-// just stops the buzzing/dropouts so photosensitive players are safe).
 float fluorescent(float base, float speed, float phase, float id) {
   if (u_isBackrooms == 0) return base;
   if (u_flickerEnabled == 0) return base;
   float t       = u_time * speed + phase;
-  float hum     = 0.06 * sin(t);                                    // ±6%
+  float hum     = 0.06 * sin(t);
   float flutter = 0.18 * (hash12(vec2(id, floor(u_time * 28.0))) - 0.5);
   float dropRng = hash12(vec2(id * 7.31, floor(u_time * 9.0)));
-  float dropout = step(0.93, dropRng);                              // 7% chance/frame
+  float dropout = step(0.93, dropRng);
   return clamp((base + hum + flutter) * (1.0 - dropout), 0.0, 1.3);
 }
 
-// Slightly blurry wall sample — averages 5 taps so the same 16/32-px wall
-// texture doesn't look pixel-sharp and hyper-repetitive on a 96×96 grid.
 vec4 sampleWallBlurred(vec2 uv) {
   float r = 0.012;
   vec4 a = texture2D(u_Sampler0, uv);
@@ -134,7 +104,6 @@ void main() {
   else if (u_whichTexture == 5) texColor = texture2D(u_Sampler5, v_TexCoord);
   else                          texColor = texture2D(u_Sampler3, v_TexCoord);
 
-  // goop tiles: transparent background shows underlying floor/wall through blending
   if (u_whichTexture == 4 && texColor.a < 0.05) discard;
 
   vec3 albedo;

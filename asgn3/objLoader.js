@@ -1,11 +1,5 @@
-// objLoader.js — lightweight Wavefront .OBJ parser
-//
-// parseOBJ(text) extracts position/UV/normal data from an OBJ string.
-// Returns a Float32Array interleaved as [x,y,z, u,v, nx,ny,nz] per vertex,
-// or null on failure (callers fall back to the cube cluster).
-// Faces are fan-triangulated, so triangles, quads, and simple polygons work.
-// Materials are ignored because this project controls colors/textures in WebGL.
-// ─────────────────────────────────────────────────────────────────────────────
+
+
 function parseOBJ(text) {
   try {
     const positions = [];
@@ -23,7 +17,7 @@ function parseOBJ(text) {
       } else if (parts[0] === 'vt') {
         uvs.push([+parts[1], +parts[2]]);
       } else if (parts[0] === 'f') {
-        // Fan-triangulate face tokens (v, v/vt, v/vt/vn, or v//vn — 1-indexed)
+
         const verts = parts.slice(1).map(tok => {
           const ids = tok.split('/');
           return {

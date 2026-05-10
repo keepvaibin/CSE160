@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>The Backrooms: Entity Survival — CSE 160 Asgn 3</title>
+  <title>The Backrooms: Entity Survival - CSE 160 Asgn 3</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -100,7 +100,6 @@
     }
     #webgl { display: block; cursor: crosshair; }
 
-    /* ── HUD base ── */
     #hud {
       position: absolute; top: 0; left: 0;
       width: 100%; height: 100%;
@@ -124,7 +123,6 @@
       text-shadow: 0 1px 3px rgba(0,0,0,0.95), 0 0 8px rgba(0,0,0,0.8), 1px 1px 0 rgba(0,0,0,0.9);
     }
 
-    /* Countdown timer */
     #timer {
       position: absolute; top: 8px; left: 50%;
       transform: translateX(-50%);
@@ -149,7 +147,6 @@
       letter-spacing: 1px; white-space: nowrap;
     }
 
-    /* Crosshair */
     #crosshair {
       position: absolute; top: 50%; left: 50%;
       transform: translate(-50%, -50%);
@@ -162,7 +159,6 @@
     #crosshair::before { width: 2px; height: 18px; left: 8px; top: 0; }
     #crosshair::after  { width: 18px; height: 2px; top: 8px; left: 0; }
 
-    /* Proximity / "sanity" bar */
     #sanityContainer {
       position: absolute; bottom: 32px; left: 50%;
       transform: translateX(-50%);
@@ -185,7 +181,6 @@
       transition: background 0.25s;
     }
 
-    /* Sprint stamina */
     #sprintLabel {
       font-size: 9px; letter-spacing: 2px;
       color: rgba(94, 200, 255, 0.55);
@@ -210,7 +205,6 @@
       white-space: nowrap;
     }
 
-    /* Pointer-lock prompt */
     #lockMsg {
       position: absolute; top: 50%; left: 50%;
       transform: translate(-50%, -50%);
@@ -222,7 +216,6 @@
     }
     #lockMsg small { display: block; margin-top: 6px; color: #666; font-size: 12px; }
 
-    /* ── Full-screen overlays ── */
     .overlay {
       display: none;
       position: absolute; top: 0; left: 0;
@@ -233,11 +226,9 @@
     }
     .overlay.active { display: flex; }
 
-    /* Jumpscare red flash */
     #jumpscareOverlay { background: rgba(160, 0, 0, 0.0); transition: background 0.05s; }
     #jumpscareOverlay.flash { background: rgba(160, 0, 0, 0.88); }
 
-    /* Lose screen */
     #loseScreen { background: rgba(0,0,0,0.93); }
     #loseScreen h1 {
       font-size: 52px; color: #cc2222; letter-spacing: 5px;
@@ -246,7 +237,6 @@
     }
     #loseScreen p { font-size: 15px; color: #777; margin-top: 14px; }
 
-    /* Win screen */
     #winScreen { background: rgba(0,0,0,0.93); }
     #winScreen h1 {
       font-size: 52px; color: #c8b85a; letter-spacing: 5px;
@@ -254,9 +244,8 @@
     }
     #winScreen p { font-size: 15px; color: #999; margin-top: 14px; }
 
-    /* pause overlay: dim screen, centred yellow text */
     #pauseScreen { background: rgba(0,0,0,0.82); }
-    /* when active the pause menu must be interactive */
+
     #pauseScreen.active { pointer-events: auto; }
     #pauseScreen h1 {
       font-size: 56px; letter-spacing: 14px; color: #f5d83a;
@@ -289,9 +278,8 @@
     }
     .pauseMenu button:hover { background: #f5d83a; color: #1c1c1c; }
 
-    /* round-reset banner across the top of the screen */
     #roundBanner {
-      position: fixed; top: 14%; left: 0; right: 0;
+      position: absolute; top: 14%; left: 0; right: 0;
       text-align: center; pointer-events: none;
       font-family: 'Courier New', monospace; font-size: 30px;
       letter-spacing: 7px; color: #f5d83a;
@@ -305,16 +293,12 @@
       to   { text-shadow: 0 0 36px #cc2222, 0 0 70px #660000; }
     }
 
-    /* ── Title / disclaimer screen ── */
-    /* Use position: fixed so the overlay covers the whole viewport, not just
-       the 800×600 canvas. Otherwise on small windows the ENTER button slides
-       below the canvas and becomes unclickable. */
     #titleScreen {
-      position: fixed;
+      position: absolute;
       top: 0; left: 0;
-      width: 100vw; height: 100vh;
+      width: 100%; height: 100%;
       background: rgba(0, 0, 0, 0.96);
-      pointer-events: auto;     /* override .overlay's pointer-events: none */
+      pointer-events: auto;
       padding: 24px;
       overflow-y: auto;
       z-index: 100;
@@ -374,7 +358,6 @@
     }
     #titleScreen .credits a { color: rgba(200,184,90,0.65); }
 
-    /* ── Fullscreen toggle button (lives on the title screen) ── */
     #fullscreenBtn {
       pointer-events: auto;
       background: rgba(0,0,0,0.5);
@@ -395,7 +378,7 @@
     <div class="win95-titlebar" aria-hidden="true">
       <div class="win95-title-left">
         <span class="win95-icon"></span>
-        <span>The Backrooms - Paint</span>
+        <span>The Backrooms</span>
       </div>
       <div class="win95-title-buttons">
         <span class="win95-title-button">_</span>
@@ -435,7 +418,6 @@
       </div>
       </div>
 
-    <!-- Full-screen overlays -->
       <div id="jumpscareOverlay" class="overlay"></div>
       <div id="loseScreen" class="overlay">
       <h1>IT GOT YOU</h1>
@@ -473,7 +455,6 @@
       </div>
       <div id="roundBanner"></div>
 
-    <!-- Narrative UI layer: Act 1 tutorial, VN dialogue, inventory, sign modal -->
       <div id="fadeOverlay" class="active">
       <div id="fadeText">after a long day of work...</div>
       </div>
@@ -508,14 +489,11 @@ HE FOLLOWS YOU EVERYWHERE</div>
         <button id="signCloseBtn" type="button">CLOSE</button>
       </div>
       </div>
-    </div>
-
-    <!-- Title / disclaimer (shown by default — must click ENTER to begin) -->
-    <div id="titleScreen" class="overlay active">
+      <div id="titleScreen" class="overlay active">
       <h1>THE BACKROOMS</h1>
       <div class="tagline">ENTITY SURVIVAL</div>
       <div class="disclaimer">
-        <strong>WARNING — PHOTOSENSITIVITY</strong><br>
+        <strong>WARNING - PHOTOSENSITIVITY</strong><br>
         This game contains rapidly flickering fluorescent lights, sudden
         screen flashes, and disorienting low-visibility environments. If you
         are sensitive to flashing imagery, please tick the option below to
@@ -531,40 +509,39 @@ HE FOLLOWS YOU EVERYWHERE</div>
       <button id="startBtn" type="button">ENTER</button>
       <div class="credits">
         <h3>AUDIO ATTRIBUTIONS</h3>
-        Backrooms Ambience by Resaural — <a href="https://freesound.org/s/626096/" target="_blank" rel="noopener">https://freesound.org/s/626096/</a> — License: Creative Commons 0<br>
+        Backrooms Ambience by Resaural - <a href="https://freesound.org/s/626096/" target="_blank" rel="noopener">https://freesound.org/s/626096/</a> - License: Creative Commons 0<br>
         Sound Effect by <a href="https://pixabay.com/users/bryansantosbreton-40689938/?utm_source=link-attribution&amp;utm_medium=referral&amp;utm_campaign=music&amp;utm_content=177771" target="_blank" rel="noopener">Bryan Jesus De Los Santos Breton</a> from <a href="https://pixabay.com//?utm_source=link-attribution&amp;utm_medium=referral&amp;utm_campaign=music&amp;utm_content=177771" target="_blank" rel="noopener">Pixabay</a><br>
-        Additional footstep / wail / chase one-shots sourced from Pixabay (Pixabay Content License — free for commercial use, no attribution required).<br>
+        Additional footstep / wail / chase one-shots sourced from Pixabay (Pixabay Content License - free for commercial use, no attribution required).<br>
         <h3 style="margin-top:14px">3D MODEL ATTRIBUTION</h3>
         <a href="https://sketchfab.com/3d-models/backrooms-bacteria-rigged-3d-model-unofficial-6687b19f281b452f8d222d22ae3b1e9c" target="_blank" rel="noopener">Backrooms Bacteria Rigged 3D Model (Unofficial)</a>
         by <a href="https://sketchfab.com/chives1996" target="_blank" rel="noopener">spy_dogg</a>
         on <a href="https://sketchfab.com" target="_blank" rel="noopener">Sketchfab</a>.
         Unofficial fan-made model based on the creature "Bacteria" from
         <a href="https://www.youtube.com/c/KANEpixels/featured" target="_blank" rel="noopener">Kane Pixels' Backrooms series</a>.<br>
-        "furniture pack" by the soppy prisma models —
+        "furniture pack" by the soppy prisma models -
         <a href="https://skfb.ly/pInCY" target="_blank" rel="noopener">https://skfb.ly/pInCY</a>
-        — licensed under Creative Commons Attribution 4.0
+        - licensed under Creative Commons Attribution 4.0
         (<a href="http://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC-BY 4.0</a>).<br>
-        "Chair 3D Model 253" by alexdizz on free3d.com —
+        "Chair 3D Model 253" by alexdizz on free3d.com -
         <a href="https://free3d.com/3d-model/chair-255345.html" target="_blank" rel="noopener">https://free3d.com/3d-model/chair-255345.html</a>
         (Personal Use License).<br>
-        "High quality grass 3D Model 297" by nevayashka on free3d.com — Personal Use License; OBJ/C4D/FBX source; commercial use allowed by model description.<br>
-        "Wooden sign 3D Model 2" by kasperserup on free3d.com — Personal Use License; OBJ source made in Blender.<br>
+        "High quality grass 3D Model 297" by nevayashka on free3d.com - Personal Use License; OBJ/C4D/FBX source; commercial use allowed by model description.<br>
+        "Wooden sign 3D Model 2" by kasperserup on free3d.com - Personal Use License; OBJ source made in Blender.<br>
         <span style="opacity:0.7">Find the exit door before time runs out. Something is hunting you.</span>
+      </div>
       </div>
     </div>
   </div>
 
-  <!-- Libraries -->
   <script src="lib/cuon-matrix-cse160.js"></script>
   <script src="webgl-utils.js"></script>
 
-  <!-- Game modules (load order matters) -->
   <script src="shaders.js"></script>
   <script src="cube.js"></script>
   <script src="objLoader.js"></script>
   <script src="world.js"></script>
   <script src="camera.js"></script>
-  <script src="entity_model.js"></script>  <!-- baked geometry; run models/bake_entity.py to (re)generate -->
+  <script src="entity_model.js"></script>
   <script src="animSystem.js"></script>
   <script src="entity.js"></script>
   <script src="gameState.js"></script>

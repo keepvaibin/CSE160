@@ -1,22 +1,17 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// camera.js — First-person perspective camera (yaw + pitch model)
-//
-// Stores eye position plus yaw (horizontal) and pitch (vertical) angles.
-// ─────────────────────────────────────────────────────────────────────────────
 
-const EYE_HEIGHT = 1.62;   // player eye level (metres, same as Minecraft)
+
+const EYE_HEIGHT = 1.62;
 
 class Camera {
   constructor(canvas) {
     this.fov   = 70;
-    this.yaw   = 0;    // 0 = facing +X (east) into the first corridor
+    this.yaw   = 0;
     this.pitch = 0;
 
-    // Spawn in the player anchor room set by initMap (defaults to (3.5,32.5))
     const sx = (typeof SPAWN_X !== 'undefined') ? SPAWN_X : 3.5;
     const sz = (typeof SPAWN_Z !== 'undefined') ? SPAWN_Z : 32.5;
     this.eye = new Vector3([sx, EYE_HEIGHT, sz]);
-    this.at  = new Vector3([sx + 1, EYE_HEIGHT, sz]);  // recomputed by updateViewMatrix
+    this.at  = new Vector3([sx + 1, EYE_HEIGHT, sz]);
     this.up  = new Vector3([0, 1.0,         0]);
 
     this.viewMatrix       = new Matrix4();
@@ -25,8 +20,6 @@ class Camera {
     this.updateViewMatrix();
     this.updateProjectionMatrix(canvas.width, canvas.height);
   }
-
-  // ── Matrix rebuilds ────────────────────────────────────────────────────────
 
   updateViewMatrix() {
     const yRad = this.yaw   * Math.PI / 180;
@@ -50,13 +43,11 @@ class Camera {
     this.projectionMatrix.setPerspective(this.fov, w / h, 0.05, 1000);
   }
 
-  // ── Flat forward vector (ignores pitch — for horizontal movement) ──────────
   _flatFwd() {
     const yRad = this.yaw * Math.PI / 180;
     return [Math.cos(yRad), 0, Math.sin(yRad)];
   }
 
-  // ── Translation ───────────────────────────────────────────────────────────
   moveForward(spd) {
     const [fx, , fz] = this._flatFwd();
     this.eye.elements[0] += fx * spd;
@@ -71,25 +62,20 @@ class Camera {
     this.updateViewMatrix();
   }
 
-  // Visual right = s = cross(fwd, up) = (-fz, 0, fx)
   moveLeft(spd) {
     const [fx, , fz] = this._flatFwd();
-    this.eye.elements[0] += fz * spd;   // -s direction
+    this.eye.elements[0] += fz * spd;
     this.eye.elements[2] -= fx * spd;
     this.updateViewMatrix();
   }
 
   moveRight(spd) {
     const [fx, , fz] = this._flatFwd();
-    this.eye.elements[0] -= fz * spd;   // +s direction
+    this.eye.elements[0] -= fz * spd;
     this.eye.elements[2] += fx * spd;
     this.updateViewMatrix();
   }
 
-  // ── Rotation helpers ───────────────────────────────────────────────────────
-
-  // panLeft(+) increases yaw → rotates toward s direction → turns RIGHT on screen
-  // (because s = cross(fwd,up) puts visual-right at negative-yaw side of +Z)
   panLeft(deg) {
     this.yaw += (deg !== undefined ? deg : 5);
     this.updateViewMatrix();
@@ -105,10 +91,8 @@ class Camera {
     this.updateViewMatrix();
   }
 
-  // ── Utility ───────────────────────────────────────────────────────────────
   getFwd() {
     const [fx, , fz] = this._flatFwd();
     return new Float32Array([fx, 0, fz]);
   }
 }
-

@@ -1,7 +1,5 @@
-// entity_model.js - auto-generated, DO NOT EDIT BY HAND
-// Run the python bake command to regenerate.
 
-// ---- body : 4158 verts / 1386 tris ----
+
 const BODY_VERT_COUNT = 4158;
 const BODY_VERTS = new Float32Array([
   -0.070384,7.987747,0.312004,0.056849,0.583333,-0.788400,-0.097500,-0.607400,
@@ -4164,7 +4162,6 @@ const BODY_VERTS = new Float32Array([
   0.082983,16.428997,0.175816,0.812500,0.937543,0.018100,-0.990500,0.136000
 ]);
 
-// ---- head : 456 verts / 152 tris ----
 const HEAD_VERT_COUNT = 456;
 const HEAD_VERTS = new Float32Array([
   0.127931,16.498978,-0.002158,0.442468,0.083333,0.585800,0.779200,-0.222800,
@@ -4625,7 +4622,6 @@ const HEAD_VERTS = new Float32Array([
   0.237050,17.462440,-1.220633,0.992253,0.028221,-0.694200,0.432500,-0.575400
 ]);
 
-// ---- arm_left : 741 verts / 247 tris ----
 const ARM_LEFT_VERT_COUNT = 741;
 const ARM_LEFT_VERTS = new Float32Array([
   -0.365165,16.199375,-2.286669,0.915267,0.718401,-0.455400,-0.805100,0.380000,
@@ -5371,7 +5367,6 @@ const ARM_LEFT_VERTS = new Float32Array([
   -0.280564,16.360493,-2.446217,0.999886,-0.000224,0.772400,-0.433600,-0.464000
 ]);
 
-// ---- arm_right : 1206 verts / 402 tris ----
 const ARM_RIGHT_VERT_COUNT = 1206;
 const ARM_RIGHT_VERTS = new Float32Array([
   0.451523,10.400839,3.057534,0.617691,0.000000,-0.043800,-0.996600,0.069500,
@@ -6582,7 +6577,6 @@ const ARM_RIGHT_VERTS = new Float32Array([
   0.386327,12.487172,2.526507,1.000263,0.594061,0.801700,-0.197200,-0.564300
 ]);
 
-// ---- leg_left : 300 verts / 100 tris ----
 const LEG_LEFT_VERT_COUNT = 300;
 const LEG_LEFT_VERTS = new Float32Array([
   -0.282759,0.047029,-2.692042,0.305381,0.000000,0.066400,-0.996300,-0.053900,
@@ -6887,7 +6881,6 @@ const LEG_LEFT_VERTS = new Float32Array([
   -0.369535,6.685935,-2.225365,0.415297,0.679021,-0.890600,0.000300,0.454800
 ]);
 
-// ---- leg_right : 237 verts / 79 tris ----
 const LEG_RIGHT_VERT_COUNT = 237;
 const LEG_RIGHT_VERTS = new Float32Array([
   0.168430,-0.060227,1.890036,0.186659,0.000000,-0.218800,-0.686100,0.693800,
@@ -7129,7 +7122,6 @@ const LEG_RIGHT_VERTS = new Float32Array([
   0.220278,2.275979,1.975616,1.000005,0.542154,-0.156200,-0.311100,0.937500
 ]);
 
-// ---- entity : 7476 verts / 2492 tris ----
 const ENTITY_VERT_COUNT = 7476;
 const ENTITY_VERTS = new Float32Array([
   0.338117,16.206703,1.853523,0.195336,0.179932,0.082300,-0.993800,-0.074300,
@@ -14609,8 +14601,8 @@ const ENTITY_VERTS = new Float32Array([
   0.087754,16.403906,0.026173,0.812569,0.937224,-0.272900,-0.856700,0.437700,
   0.170282,16.500931,0.270462,0.774732,0.910783,-0.282900,-0.862000,0.420700
 ]);
-// ---- bounding-box constants (computed from entity.obj) ----
+
 const ENTITY_OBJ_CX     = -0.124;
-const ENTITY_OBJ_CY     = -0.060;   // feet (Y_min)
+const ENTITY_OBJ_CY     = -0.060;
 const ENTITY_OBJ_CZ     = -0.302;
-const ENTITY_OBJ_H      = 19.789;   // model height
+const ENTITY_OBJ_H      = 19.789;

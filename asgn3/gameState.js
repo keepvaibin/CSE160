@@ -1,8 +1,4 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// gameState.js — narrative state machine for Act 1 suburbs → Act 2 Backrooms
-// Vanilla JavaScript only.  This file owns the tutorial/story rules and all
-// HTML overlay UI updates; WebGL drawing stays in world.js/main.js.
-// ─────────────────────────────────────────────────────────────────────────────
+
 
 const GAME_PHASE = Object.freeze({
   FADE_IN: 'FADE_IN',
@@ -364,7 +360,7 @@ function canMoveToNarrative(nx, nz) {
   if (isNarrativeMovementLocked()) return false;
 
   if (g_currentLevel === 1) {
-    // The porch is blocked until the yard-work state machine is complete.
+
     if (nz >= 14.15 && nx >= 12.0 && nx <= 19.0 && g_gs.phase !== GAME_PHASE.WALK_TO_HOUSE) {
       if (g_gs.phase === GAME_PHASE.TUTORIAL_RETURN_CAN) {
         setObjective('Return the watering can');
@@ -555,7 +551,7 @@ function updateGameState(dt) {
   }
 
   if (g_gs.phase === GAME_PHASE.TUTORIAL_MOVE && g_gs.hasMoved && g_gs.stateTime > 3.0) {
-    // If the player ignores the porch, still guide them toward garden work.
+
     if (g_gs.stateTime > 8.0) setPhase(GAME_PHASE.TUTORIAL_WEEDS);
   }
 
