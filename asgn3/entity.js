@@ -4,6 +4,8 @@ const ENTITY_SPEED       = 2.4;
 const ENTITY_BURST_MULT  = 1.20;
 const ENTITY_BURST_RANGE = 9.0;
 const ENTITY_RADIUS  = 0.28;
+const MEME_NEXTBOT_SPEED = 7.2;
+const MEME_NEXTBOT_SIZE = 4.4;
 
 function _entitySpawnX() { return (typeof ENTITY_SPAWN_X !== 'undefined') ? ENTITY_SPAWN_X : 60.5; }
 function _entitySpawnZ() { return (typeof ENTITY_SPAWN_Z !== 'undefined') ? ENTITY_SPAWN_Z : 60.5; }
@@ -19,9 +21,13 @@ var g_entityParts = {};
 var g_entityFallbackBuffer = null;
 var g_entityFallbackCount  = 0;
 var g_entityLoaded         = false;
+var g_memeNextbotBuffer    = null;
+var g_memeNextbotTexture   = null;
+var g_memeNextbotMatrix    = new Matrix4();
 
 var g_entity = {
   x: 60.5,
+  y: 0.0,
   z: 60.5,
   yaw: 0,
   walkPhase: 0,
@@ -29,6 +35,8 @@ var g_entity = {
   pathDir: null,
 
   vx: 0, vz: 0,
+  yVelocity: 0,
+  isGrounded: true,
   hasLOS: false,
   inChase: false,
 };
@@ -71,7 +79,10 @@ function resetEntityPath() {
 function initEntityModel() {
 
   g_entity.x = _entitySpawnX();
+  g_entity.y = 0.0;
   g_entity.z = _entitySpawnZ();
+  g_entity.yVelocity = 0.0;
+  g_entity.isGrounded = true;
 
   function upload(verts, count) {
     if (!verts) return null;
@@ -101,6 +112,30 @@ function initEntityModel() {
   g_entityLoaded = (Object.keys(g_entityParts).length === 6) || (g_entityFallbackCount > 0);
   console.log('[entity] Loaded parts:', Object.keys(g_entityParts).join(', '),
               '| fallback verts:', g_entityFallbackCount);
+  initMemeNextbot();
+}
+
+function initMemeNextbot() {
+  const verts = new Float32Array([
+    -0.5, 0.0, 0.0, 0.0, 0.0, 0, 0, 1,
+     0.5, 0.0, 0.0, 1.0, 0.0, 0, 0, 1,
+     0.5, 1.0, 0.0, 1.0, 1.0, 0, 0, 1,
+    -0.5, 0.0, 0.0, 0.0, 0.0, 0, 0, 1,
+     0.5, 1.0, 0.0, 1.0, 1.0, 0, 0, 1,
+    -0.5, 1.0, 0.0, 0.0, 1.0, 0, 0, 1,
+  ]);
+  g_memeNextbotBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, g_memeNextbotBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+
+  g_memeNextbotTexture = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE5);
+  gl.bindTexture(gl.TEXTURE_2D, g_memeNextbotTexture);
+  const fb = (typeof generateFallbackTexture === 'function') ? generateFallbackTexture('meme_nextbot') : null;
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  if (fb) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, fb);
+  else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 0, 255, 255]));
+  if (typeof setTextureParams === 'function') setTextureParams(gl.TEXTURE5, g_memeNextbotTexture, fb ? fb.width : 1, fb ? fb.height : 1, true);
 }
 
 function _entityBlockedAt(x, z) {
@@ -108,6 +143,14 @@ function _entityBlockedAt(x, z) {
   for (const [cx, cz] of [[x+r,z+r],[x+r,z-r],[x-r,z+r],[x-r,z-r]]) {
     const bx = Math.floor(cx), bz = Math.floor(cz);
     if (bx < 0 || bx >= MAP_SIZE || bz < 0 || bz >= MAP_SIZE) return true;
+    if (typeof g_currentLevel !== 'undefined' && g_currentLevel === LEVEL_188 && typeof level188FloorHeightAt === 'function') {
+      const currentFloor = level188FloorHeightAt(g_entity.x, g_entity.z, g_entity.y + 1.62);
+      const targetFloor = level188FloorHeightAt(cx, cz, g_entity.y + 1.62);
+      if (targetFloor <= 0.05 && typeof level188HasGroundAt === 'function' && !level188HasGroundAt(cx, cz)) return true;
+      if (targetFloor - currentFloor > 0.85) return true;
+      if (typeof level188HasBlockerAt === 'function' && level188HasBlockerAt(cx, cz, g_entity.y, 2.4)) return true;
+      continue;
+    }
     if (g_Map[bx][bz] > 0) return true;
   }
 
@@ -119,6 +162,27 @@ function _entityBlockedAt(x, z) {
     }
   }
   return false;
+}
+
+function _updateEntityVertical(dt) {
+  if (typeof g_currentLevel === 'undefined' || g_currentLevel !== LEVEL_188 || typeof level188FloorHeightAt !== 'function') return;
+  const floor = level188FloorHeightAt(g_entity.x, g_entity.z, g_entity.y + 1.62);
+  if (floor > g_entity.y && floor - g_entity.y <= 0.85) {
+    g_entity.y = floor;
+    g_entity.yVelocity = 0;
+    g_entity.isGrounded = true;
+    return;
+  }
+  const grav = (typeof GRAVITY_ACCEL !== 'undefined') ? GRAVITY_ACCEL : -24.0;
+  g_entity.yVelocity += grav * dt;
+  g_entity.y += g_entity.yVelocity * dt;
+  if (g_entity.y <= floor) {
+    g_entity.y = floor;
+    g_entity.yVelocity = 0;
+    g_entity.isGrounded = true;
+  } else {
+    g_entity.isGrounded = false;
+  }
 }
 
 function _recomputePath() {
@@ -187,6 +251,10 @@ function _recomputePath() {
 }
 
 function updateEntity(dt) {
+  if (typeof g_memeMode !== 'undefined' && g_memeMode) {
+    updateMemeNextbot(dt);
+    return;
+  }
   _ensurePathBuffers();
   const eye = camera.eye.elements;
   const playerCellX = Math.floor(eye[0]);
@@ -259,6 +327,30 @@ function updateEntity(dt) {
   if (!moved) g_entity.pathRecalcTimer = 0;
 
   if (moved) g_entity.walkPhase += dt;
+}
+
+function updateMemeNextbot(dt) {
+  const eye = camera.eye.elements;
+  const dx = eye[0] - g_entity.x;
+  const dz = eye[2] - g_entity.z;
+  const dist = Math.sqrt(dx * dx + dz * dz);
+  if (dist < 0.001) { _updateEntityVertical(dt); return; }
+
+  const speedMult = (typeof g_entitySpeedMult !== 'undefined') ? g_entitySpeedMult : 1.0;
+  const spd = MEME_NEXTBOT_SPEED * speedMult * dt;
+  const prevX = g_entity.x;
+  const prevZ = g_entity.z;
+  const nx = g_entity.x + (dx / dist) * spd;
+  const nz = g_entity.z + (dz / dist) * spd;
+  if      (!_entityBlockedAt(nx, nz))         { g_entity.x = nx; g_entity.z = nz; }
+  else if (!_entityBlockedAt(nx, g_entity.z)) { g_entity.x = nx; }
+  else if (!_entityBlockedAt(g_entity.x, nz)) { g_entity.z = nz; }
+  g_entity.vx = g_entity.x - prevX;
+  g_entity.vz = g_entity.z - prevZ;
+  _updateEntityVertical(dt);
+  g_entity.hasLOS = true;
+  g_entity.inChase = true;
+  g_entity.walkPhase += dt;
 }
 
 function _hasLineOfSightToPlayer() {
@@ -372,6 +464,10 @@ function _drawEntityFallback() {
 }
 
 function drawEntity(seconds) {
+  if (typeof g_memeMode !== 'undefined' && g_memeMode) {
+    drawMemeNextbot();
+    return;
+  }
   const haveAllParts = ['body','head','arm_left','arm_right','leg_left','leg_right']
                          .every(p => g_entityParts[p]);
   if (haveAllParts && g_animLoaded) {
@@ -379,4 +475,39 @@ function drawEntity(seconds) {
   } else {
     _drawEntityFallback();
   }
+}
+
+function drawMemeNextbot() {
+  if (!g_memeNextbotBuffer || !g_memeNextbotTexture || !camera) return;
+  const eye = camera.eye.elements;
+  const angle = Math.atan2(eye[0] - g_entity.x, eye[2] - g_entity.z);
+  const m = g_memeNextbotMatrix.setIdentity();
+  m.translate(g_entity.x, g_entity.y || 0.0, g_entity.z);
+  m.rotate(angle * 180 / Math.PI, 0, 1, 0);
+  m.scale(MEME_NEXTBOT_SIZE, MEME_NEXTBOT_SIZE, MEME_NEXTBOT_SIZE);
+
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.depthMask(false);
+  gl.activeTexture(gl.TEXTURE5);
+  gl.bindTexture(gl.TEXTURE_2D, g_memeNextbotTexture);
+  gl.uniform1i(u_whichTexture, 5);
+  gl.uniform1f(u_texColorWeight, 1.0);
+  gl.uniform4f(u_baseColor, 1.0, 1.0, 1.0, 1.0);
+  gl.uniform1i(u_emissive, 1);
+  gl.uniformMatrix4fv(u_ModelMatrix, false, m.elements);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, g_memeNextbotBuffer);
+  const stride = 32;
+  gl.vertexAttribPointer(a_Position, 3, gl.FLOAT, false, stride,  0);
+  gl.enableVertexAttribArray(a_Position);
+  gl.vertexAttribPointer(a_TexCoord, 2, gl.FLOAT, false, stride, 12);
+  gl.enableVertexAttribArray(a_TexCoord);
+  gl.vertexAttribPointer(a_Normal,   3, gl.FLOAT, false, stride, 20);
+  gl.enableVertexAttribArray(a_Normal);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+  gl.uniform1i(u_emissive, 0);
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
 }

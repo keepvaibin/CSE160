@@ -22,6 +22,7 @@ const MOUSE_EVENT_DELTA_CAP = 20;
 const MOUSE_FRAME_DELTA_CAP = 28;
 const MOUSE_PENDING_DELTA_CAP = 56;
 var g_pendingMouseX = 0, g_pendingMouseY = 0;
+var g_jumpQueued = false;
 
 const ROUND_SECONDS  = 120.0;
 var g_timer    = ROUND_SECONDS;
@@ -31,6 +32,12 @@ var g_gameWon  = false;
 var g_paused   = false;
 var g_speedrunTime = 0;
 var g_speedrunFinished = false;
+var g_unlimitedMode = false;
+var g_unlimitedScore = 0;
+var g_unlimitedDoorCooldown = 0;
+var g_memeMode = false;
+var g_memeAudioActive = false;
+const LEVEL188_TEMP_DISABLED = true;
 var g_dimTimer = 0;
 var g_performanceMode = false;
 const PERFORMANCE_RENDER_SCALE = 0.40;
@@ -42,6 +49,9 @@ const BACKROOMS_FOG_NEAR = 1.8;
 const BACKROOMS_FOG_FAR = 14.0;
 const BACKROOMS_PERF_FOG_NEAR = 1.0;
 const BACKROOMS_PERF_FOG_FAR = 8.5;
+const LEVEL188_FOG_NEAR = 18.0;
+const LEVEL188_FOG_FAR = 130.0;
+const MEME_AUDIO_DISTANCE = 10.0;
 var g_SuburbTexObjs = {};
 var g_TextureParamRecords = [];
 var g_LevelModelMeshes = {};
@@ -49,6 +59,8 @@ var g_suppressPointerPause = false;
 
 var g_entitySpeedMult = 1.0;
 const ENTITY_SPEEDUP_PER_ROUND = 0.20;
+const UNLIMITED_ENTITY_SPEEDUP_PER_DOOR = 0.05;
+const UNLIMITED_PLAYER_SPEED_MULT = 1.20;
 
 var g_masterVolume = 1.0;
 
@@ -72,6 +84,7 @@ var g_audioCtx      = null;
 var g_proximityGain = null;
 var g_ambienceEl    = null;
 var g_chaseEl       = null;
+var g_memeAudioEl   = null;
 
 var g_smallFootBufs = [];
 var g_bigFootBufs   = [];
@@ -89,6 +102,9 @@ var g_walkPhase   = 0;
 const BOB_AMP     = 0.045;
 const BOB_FREQ    = 8.4;
 var  g_baseEyeY   = 1.62;
+const PLAYER_EYE_HEIGHT = (typeof EYE_HEIGHT !== 'undefined') ? EYE_HEIGHT : 1.62;
+const GRAVITY_ACCEL = -24.0;
+const JUMP_VELOCITY = 7.0;
 
 const FOG_R = 0.72, FOG_G = 0.56, FOG_B = 0.34;
 
@@ -213,11 +229,12 @@ function tick(timestamp) {
 
   if (!g_paused) {
     g_seconds += dt;
-    if (g_started && !g_speedrunFinished) g_speedrunTime += dt;
+    if (g_started && !g_speedrunFinished && !g_unlimitedMode && !g_memeMode) g_speedrunTime += dt;
+    if (g_unlimitedDoorCooldown > 0) g_unlimitedDoorCooldown = Math.max(0, g_unlimitedDoorCooldown - dt);
     if (g_dimTimer > 0) g_dimTimer = Math.max(0, g_dimTimer - dt);
     if (typeof updateGameState === 'function') updateGameState(dt);
     const chaseActive = (typeof isBackroomsChaseActive === 'function') ? isBackroomsChaseActive() : g_started;
-    if (g_started && chaseActive) {
+    if (g_started && chaseActive && !g_unlimitedMode && !g_memeMode) {
       g_timer -= dt;
 
       if (g_timer <= 0) {
@@ -234,12 +251,21 @@ function tick(timestamp) {
 
   if (!g_paused) {
     processInput(dt);
+    // Skip vertical physics while the FALLING cinematic is running —
+    // updateGameState drives the eye position directly during that phase.
+    const _inFall = (typeof g_gs !== 'undefined' && typeof GAME_PHASE !== 'undefined'
+                     && g_gs.phase === GAME_PHASE.FALLING);
+    if (g_started && !g_gameOver && !g_gameWon && !_inFall) applyPlayerVerticalPhysics(dt);
+    else g_jumpQueued = false;
     const chaseActive = (typeof isBackroomsChaseActive === 'function') ? isBackroomsChaseActive() : g_started;
     if (g_started && chaseActive && g_entityActive) {
       updateEntity(dt);
-      updateEntityAudio(dt);
+      if (g_memeMode) updateMemeProximityAudio(dt);
+      else updateEntityAudio(dt);
       if (getEntityDist() < 1.5) { triggerLose(); return; }
     }
+  } else if (g_memeMode) {
+    setMemeProximityAudio(false);
   }
 
   renderScene();
@@ -254,7 +280,7 @@ function renderScene() {
   gl.uniformMatrix4fv(u_ProjectionMatrix, false, camera.projectionMatrix.elements);
 
   gl.uniform1i(u_numLights, g_dimTimer > 0 ? 0 : Math.min(g_LightPositions.length, 8));
-  if (g_currentLevel === LEVEL_SUBURBS) drawSkybox();
+  if (g_currentLevel === LEVEL_SUBURBS || g_currentLevel === LEVEL_188) drawSkybox();
   renderWorld();
   drawLevelModels();
   drawGardenHighlight();
@@ -286,6 +312,9 @@ function drawSkybox() {
 function triggerLose() {
   if (g_gameOver || g_gameWon) return;
   g_gameOver = true;
+  setMemeProximityAudio(false);
+  const finalScoreEl = document.getElementById('finalUnlimitedScore');
+  if (finalScoreEl) finalScoreEl.textContent = g_unlimitedMode ? 'Doors cleared: ' + g_unlimitedScore + '.' : '';
   const jso = document.getElementById('jumpscareOverlay');
   jso.classList.add('active', 'flash');
   if (g_audioCtx) {
@@ -308,6 +337,10 @@ function triggerLose() {
 
 function triggerWin() {
   if (g_gameOver || g_gameWon) return;
+  if (g_unlimitedMode) {
+    advanceUnlimitedLevel();
+    return;
+  }
   g_gameWon = true;
   g_speedrunFinished = true;
   const finalTime = formatSpeedrunTime(g_speedrunTime);
@@ -319,6 +352,167 @@ function triggerWin() {
     speedrunEl.classList.add('show');
   }
   document.getElementById('winScreen').classList.add('active');
+}
+
+function canToggleStartOptions() {
+  const overlay = document.getElementById('titleScreen');
+  return !!overlay && !g_started && overlay.classList.contains('active') && overlay.style.display !== 'none';
+}
+
+function canToggleUnlimitedAtTitle() {
+  return canToggleStartOptions();
+}
+
+function setUnlimitedMode(enabled) {
+  g_unlimitedMode = !!enabled;
+  if (g_unlimitedMode) g_memeMode = false;
+  refreshModeMenuLabels();
+}
+
+function setMemeMode(enabled) {
+  if (LEVEL188_TEMP_DISABLED) {
+    g_memeMode = false;
+    refreshModeMenuLabels();
+    return;
+  }
+  g_memeMode = !!enabled;
+  if (g_memeMode) g_unlimitedMode = false;
+  refreshModeMenuLabels();
+}
+
+function refreshModeMenuLabels() {
+  const canToggle = canToggleStartOptions();
+  const unlimitedBtn = document.getElementById('unlimitedToggleBtn');
+  if (unlimitedBtn) {
+    unlimitedBtn.textContent = 'Unlimited: ' + (g_unlimitedMode ? 'True' : 'False');
+    unlimitedBtn.classList.toggle('disabled', !canToggle);
+  }
+  const memeCb = document.getElementById('memeModeCb');
+  if (memeCb) {
+    const memeOption = memeCb.closest('label');
+    if (memeOption) memeOption.style.display = LEVEL188_TEMP_DISABLED ? 'none' : '';
+    memeCb.checked = !LEVEL188_TEMP_DISABLED && g_memeMode;
+    memeCb.disabled = LEVEL188_TEMP_DISABLED || !canToggle;
+  }
+}
+
+function refreshUnlimitedMenuLabel() {
+  refreshModeMenuLabels();
+}
+
+function setOptionsMenuOpen(open) {
+  const wrap = document.getElementById('optionsMenuWrap');
+  const btn = document.getElementById('optionsMenuBtn');
+  if (wrap) wrap.classList.toggle('open', !!open);
+  if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  refreshUnlimitedMenuLabel();
+}
+
+function updateUnlimitedObjective() {
+  if (typeof setObjective === 'function') setObjective('Find the next door');
+}
+
+function enterUnlimitedBackroomsLevel() {
+  if (typeof scrubLevel1UIForBackrooms === 'function') scrubLevel1UIForBackrooms();
+  if (typeof loadLevel === 'function') loadLevel(LEVEL_BACKROOMS);
+  if (typeof hideFade === 'function') hideFade();
+  if (typeof hideVN === 'function') hideVN();
+  if (typeof hideControlsToast === 'function') hideControlsToast();
+  if (typeof hideSignPopup === 'function') hideSignPopup();
+  if (typeof setPhase === 'function') setPhase(GAME_PHASE.BACKROOMS_CHASE);
+  document.body.classList.remove('level-suburbs', 'level-backrooms-trapped');
+  document.body.classList.add('level-backrooms');
+  if (typeof activateBackroomsEntity === 'function') activateBackroomsEntity();
+  updateUnlimitedObjective();
+  g_timer = ROUND_SECONDS;
+  g_dimTimer = 0;
+  g_unlimitedDoorCooldown = 0.35;
+}
+
+function startUnlimitedRun() {
+  if (typeof resetGameStateForNewGame === 'function') resetGameStateForNewGame();
+  g_unlimitedScore = 0;
+  g_entitySpeedMult = 1.0;
+  g_round = 1;
+  g_timer = ROUND_SECONDS;
+  g_speedrunFinished = false;
+  enterUnlimitedBackroomsLevel();
+}
+
+function advanceUnlimitedLevel() {
+  if (g_unlimitedDoorCooldown > 0) return;
+  g_unlimitedDoorCooldown = 0.8;
+  g_unlimitedScore++;
+  g_entitySpeedMult *= (1.0 + UNLIMITED_ENTITY_SPEEDUP_PER_DOOR);
+  enterUnlimitedBackroomsLevel();
+}
+
+function checkUnlimitedDoorReached() {
+  if (!g_unlimitedMode || !g_started || g_gameOver || g_gameWon) return;
+  if (typeof g_currentLevel === 'undefined' || g_currentLevel !== LEVEL_BACKROOMS) return;
+  if (typeof DOOR_CELL_X === 'undefined' || DOOR_CELL_X < 0 || g_unlimitedDoorCooldown > 0) return;
+  const e = camera.eye.elements;
+  // Use reach cell center as trigger (works for any approach direction)
+  const rX = (typeof DOOR_REACH_X !== 'undefined' && DOOR_REACH_X >= 0) ? DOOR_REACH_X : DOOR_CELL_X - 1;
+  const rZ = (typeof DOOR_REACH_Z !== 'undefined' && DOOR_REACH_Z >= 0) ? DOOR_REACH_Z : DOOR_CELL_Z;
+  const doorX = rX + 0.5;
+  const doorZ = rZ + 0.5;
+  const dx = e[0] - doorX;
+  const dz = e[2] - doorZ;
+  if (dx * dx + dz * dz <= 1.2 * 1.2) advanceUnlimitedLevel();
+}
+
+function startMemeRun() {
+  if (LEVEL188_TEMP_DISABLED) {
+    g_memeMode = false;
+    if (typeof startNarrativeSequence === 'function') startNarrativeSequence();
+    return;
+  }
+  if (typeof resetGameStateForNewGame === 'function') resetGameStateForNewGame();
+  g_gameOver = false;
+  g_gameWon = false;
+  g_unlimitedScore = 0;
+  g_entitySpeedMult = 1.0;
+  g_round = 1;
+  g_timer = ROUND_SECONDS;
+  g_speedrunFinished = false;
+  g_memeAudioActive = false;
+  const lose = document.getElementById('loseScreen');
+  const win = document.getElementById('winScreen');
+  const jump = document.getElementById('jumpscareOverlay');
+  if (lose) lose.classList.remove('active');
+  if (win) win.classList.remove('active');
+  if (jump) jump.classList.remove('active', 'flash');
+  setMemeProximityAudio(false);
+  if (typeof scrubLevel1UIForBackrooms === 'function') scrubLevel1UIForBackrooms();
+  if (typeof loadLevel === 'function') loadLevel(LEVEL_188);
+  if (typeof hideFade === 'function') hideFade();
+  if (typeof hideVN === 'function') hideVN();
+  if (typeof hideControlsToast === 'function') hideControlsToast();
+  if (typeof hideSignPopup === 'function') hideSignPopup();
+  if (typeof setPhase === 'function') setPhase(GAME_PHASE.BACKROOMS_CHASE);
+  document.body.classList.remove('level-suburbs', 'level-backrooms-trapped');
+  document.body.classList.add('level-backrooms');
+  if (typeof activateBackroomsEntity === 'function') activateBackroomsEntity();
+  if (typeof setObjective === 'function') setObjective('Survive Level 188');
+}
+
+function setMemeProximityAudio(enabled) {
+  g_memeAudioActive = !!enabled;
+  if (!g_memeAudioEl) return;
+  if (g_memeAudioActive) {
+    g_memeAudioEl.volume = clampAudioVolume(1.0 * g_masterVolume);
+    g_memeAudioEl.playbackRate = 1.18;
+    if (g_memeAudioEl.paused) g_memeAudioEl.play().catch(()=>{});
+  } else {
+    g_memeAudioEl.pause();
+    try { g_memeAudioEl.currentTime = 0; } catch (e) { }
+  }
+}
+
+function updateMemeProximityAudio(_dt) {
+  const dist = getEntityDist();
+  setMemeProximityAudio(dist < MEME_AUDIO_DISTANCE);
 }
 
 function togglePause() {
@@ -729,15 +923,17 @@ function getFloorArrowTexForDelta(dx, dz) {
 }
 
 function addExitBreadcrumbs() {
-  const tx = DOOR_CELL_X - 1;
-  const tz = DOOR_CELL_Z;
+  // Approach (reach) cell: where player stands to enter the door
+  const tx = (typeof DOOR_REACH_X !== 'undefined' && DOOR_REACH_X >= 0) ? DOOR_REACH_X : DOOR_CELL_X - 1;
+  const tz = (typeof DOOR_REACH_Z !== 'undefined' && DOOR_REACH_Z >= 0) ? DOOR_REACH_Z : DOOR_CELL_Z;
   if (!g_Map || !g_Map.length || !g_Map[tx] || g_Map[tx][tz] !== 0) return;
-
+  // Arrow at reach cell points toward the door
+  const doorDirTex = getFloorArrowTexForDelta(DOOR_CELL_X - tx, DOOR_CELL_Z - tz);
   for (let x = tx - 1; x <= tx + 1; x++) {
     for (let z = tz - 1; z <= tz + 1; z++) {
       if (!g_Map[x] || g_Map[x][z] !== 0) continue;
       const texName = (x === tx && z === tz)
-        ? 'goop_arrow_right.png'
+        ? doorDirTex
         : getFloorArrowTexForDelta(tx - x, tz - z);
       g_goopFloorCells.set(x + ',' + z, texName);
     }
@@ -896,13 +1092,29 @@ function drawExitDoorMarker() {
   if (typeof DOOR_CELL_X === 'undefined' || DOOR_CELL_X < 0) return;
   if (!isDrawPointVisible(DOOR_CELL_X + 0.5, DOOR_CELL_Z + 0.5, 1.5)) return;
 
+  // Determine which face the door panel appears on, based on reach direction
+  const reachX = (typeof DOOR_REACH_X !== 'undefined' && DOOR_REACH_X >= 0) ? DOOR_REACH_X : DOOR_CELL_X - 1;
+  const reachZ = (typeof DOOR_REACH_Z !== 'undefined' && DOOR_REACH_Z >= 0) ? DOOR_REACH_Z : DOOR_CELL_Z;
+  const ddx = reachX - DOOR_CELL_X; // -1=W, +1=E, 0=N/S
+  const ddz = reachZ - DOOR_CELL_Z; // 0=E/W, -1=N, +1=S
+  const xFacing = ddx !== 0;
+
+  // Panel sits on the face between door cell and reach cell
+  let px, pz, sw, sd;
+  if (xFacing) {
+    px = DOOR_CELL_X + (ddx < 0 ? -0.035 : 1.035);
+    pz = DOOR_CELL_Z + 0.5;
+    sw = 0.06; sd = 1.08;
+  } else {
+    px = DOOR_CELL_X + 0.5;
+    pz = DOOR_CELL_Z + (ddz < 0 ? -0.035 : 1.035);
+    sw = 1.08; sd = 0.06;
+  }
+
   bindSingleCubeBuffer();
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   gl.depthMask(false);
-
-  const doorX = DOOR_CELL_X - 0.035;
-  const doorZ = DOOR_CELL_Z + 0.5;
 
   gl.uniform1i(u_whichTexture, 3);
   gl.uniform1f(u_texColorWeight, 1.0);
@@ -910,30 +1122,10 @@ function drawExitDoorMarker() {
   gl.uniform1i(u_emissive, 0);
   if (!drawExitDoorMarker._doorPanel) drawExitDoorMarker._doorPanel = new Matrix4();
   const doorPanel = drawExitDoorMarker._doorPanel.setIdentity();
-  doorPanel.translate(doorX, 1.08, doorZ);
-  doorPanel.scale(0.06, 2.16, 1.08);
+  doorPanel.translate(px, 1.08, pz);
+  doorPanel.scale(sw, 2.16, sd);
   gl.uniformMatrix4fv(u_ModelMatrix, false, doorPanel.elements);
   gl.drawArrays(gl.TRIANGLES, 0, 36);
-
-  gl.uniform1f(u_texColorWeight, 0.0);
-  gl.uniform1i(u_whichTexture, 5);
-  gl.uniform1i(u_emissive, 1);
-  gl.uniform4f(u_baseColor, 1.0, 0.82, 0.16, 0.92);
-  const framePieces = [
-    { y: 1.10, z: doorZ - 0.62, sy: 2.26, sz: 0.09 },
-    { y: 1.10, z: doorZ + 0.62, sy: 2.26, sz: 0.09 },
-    { y: 2.25, z: doorZ,        sy: 0.11, sz: 1.34 },
-    { y: 0.03, z: doorZ,        sy: 0.06, sz: 1.34 },
-  ];
-  if (!drawExitDoorMarker._frameMatrix) drawExitDoorMarker._frameMatrix = new Matrix4();
-  const frameMatrix = drawExitDoorMarker._frameMatrix;
-  for (const piece of framePieces) {
-    frameMatrix.setIdentity();
-    frameMatrix.translate(doorX - 0.045, piece.y, piece.z);
-    frameMatrix.scale(0.07, piece.sy, piece.sz);
-    gl.uniformMatrix4fv(u_ModelMatrix, false, frameMatrix.elements);
-    gl.drawArrays(gl.TRIANGLES, 0, 36);
-  }
 
   gl.uniform1i(u_emissive, 0);
   gl.depthMask(true);
@@ -969,6 +1161,12 @@ function initAudioFiles() {
     g_chaseEl.loop   = true;
     g_chaseEl.volume = 0.0;
   } catch (e) { console.log('chase audio unavailable:', e.message); }
+
+  g_memeAudioEl = document.getElementById('memeAudio');
+  if (g_memeAudioEl) {
+    g_memeAudioEl.loop = true;
+    g_memeAudioEl.volume = 0.0;
+  }
 
   if (!g_audioCtx) return;
   function loadBuf(url) {
@@ -1066,37 +1264,16 @@ function loadBackroomsDoorTexture(texUnitEnum) {
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, fbCanvas);
   setTextureParams(texUnitEnum, tex, fbCanvas.width, fbCanvas.height, false);
 
-  const topImg = new Image();
-  const bottomImg = new Image();
-  let topReady = false;
-  let bottomReady = false;
-
-  function uploadIfReady() {
-    if (!topReady || !bottomReady) return;
-    const width = Math.max(topImg.width, bottomImg.width);
-    const halfHeight = Math.max(topImg.height, bottomImg.height);
-    const cvs = document.createElement('canvas');
-    cvs.width = width;
-    cvs.height = halfHeight * 2;
-    const ctx = cvs.getContext('2d');
-    ctx.imageSmoothingEnabled = false;
-    ctx.clearRect(0, 0, cvs.width, cvs.height);
-    ctx.drawImage(topImg, 0, 0, width, halfHeight);
-    ctx.drawImage(bottomImg, 0, halfHeight, width, halfHeight);
-
+  const img = new Image();
+  img.onload = () => {
     gl.activeTexture(texUnitEnum);
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cvs);
-    setTextureParams(texUnitEnum, tex, cvs.width, cvs.height, false);
-  }
-
-  topImg.onload = () => { topReady = true; uploadIfReady(); };
-  bottomImg.onload = () => { bottomReady = true; uploadIfReady(); };
-  topImg.onerror = () => console.log('Texture not found: textures/Oak_Door_(top_texture)_JE5_BE3.png  (using procedural fallback)');
-  bottomImg.onerror = () => console.log('Texture not found: textures/Oak_Door_(bottom_texture)_JE4_BE2.png  (using procedural fallback)');
-  topImg.src = 'textures/Oak_Door_(top_texture)_JE5_BE3.png';
-  bottomImg.src = 'textures/Oak_Door_(bottom_texture)_JE4_BE2.png';
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    setTextureParams(texUnitEnum, tex, img.width, img.height, false);
+  };
+  img.onerror = () => console.log('Texture not found: textures/door.png  (using procedural fallback)');
+  img.src = 'textures/door.png';
 }
 
 function isPowerOfTwo(value) {
@@ -1176,7 +1353,12 @@ const SUBURB_TEXTURES = [
   'road.png', 'sidewalk.png', 'grass.png', 'housewall.png', 'woodendeck.png',
   'weed.png', 'dirt_unwatered.png', 'dirt_watered.png', 'fence.png',
   'Grass_Block_(top_texture)_JE2.png', 'Oak_Door_(bottom_texture)_JE4_BE2.png',
-  'Oak_Door_(top_texture)_JE5_BE3.png', 'Sofa1_diff.png'
+  'Oak_Door_(top_texture)_JE5_BE3.png', 'Sofa1_diff.png', 'level188_wall.png',
+  // Level 188 hotel textures
+  'level188_lid.png', 'level188_floor_turf.png', 'level188_floor_path.png',
+  'level188_floor_center.png', 'level188_hall_floor.png',
+  'level188_wall_a.png', 'level188_wall_b.png', 'level188_hall_wall.png',
+  'level188_win_warm.png', 'level188_win_cold.png', 'level188_win_dark.png', 'level188_railing.png'
 ];
 
 function getSuburbTextureUploadSource(name, img) {
@@ -1191,6 +1373,10 @@ function getSuburbTextureUploadSource(name, img) {
   return cvs;
 }
 
+function isProceduralSuburbTexture(name) {
+  return name === 'level188_wall.png' || name.indexOf('level188_') === 0;
+}
+
 function loadSuburbTextures() {
   for (const name of SUBURB_TEXTURES) {
     const tex = gl.createTexture();
@@ -1201,6 +1387,7 @@ function loadSuburbTextures() {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, fb);
     setTextureParams(gl.TEXTURE5, tex, fb.width, fb.height, false);
     g_SuburbTexObjs[name] = tex;
+    if (isProceduralSuburbTexture(name)) continue;
     const img = new Image();
     img.onload = () => {
       gl.activeTexture(gl.TEXTURE5);
@@ -1312,6 +1499,124 @@ function generateFallbackTexture(type) {
       }
       break;
     }
+    case 'level188_wall': {
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const frame = (x < 2 || x > 29 || y < 2 || y > 29 || x === 15 || x === 16) ? -34 : 0;
+        const pane = (x > 3 && x < 28 && y > 5 && y < 23) ? -70 : 0;
+        const glare = (pane && ((x + y) % 11 < 2)) ? 36 : 0;
+        const n = noise(8);
+        setpx(x, y, 196+n+frame+pane+glare, 188+n+frame+pane+glare, 168+n+frame+pane+Math.floor(glare * 0.5));
+      }
+      break;
+    }
+    case 'meme_nextbot': {
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const cx = x - 16;
+        const cy = y - 16;
+        const face = cx * cx / 120 + cy * cy / 150 < 1;
+        const border = cx * cx / 150 + cy * cy / 180 < 1 && !face;
+        if (border) setpx(x, y, 20, 20, 20);
+        else if (face) setpx(x, y, 214 + noise(10), 154 + noise(10), 92 + noise(8));
+        else { const i = (y * S + x) * 4; d[i] = 0; d[i+1] = 0; d[i+2] = 0; d[i+3] = 0; }
+      }
+      for (let y = 11; y <= 13; y++) for (let x = 9; x <= 12; x++) setpx(x, y, 5, 5, 5);
+      for (let y = 11; y <= 13; y++) for (let x = 20; x <= 23; x++) setpx(x, y, 5, 5, 5);
+      for (let y = 21; y <= 23; y++) for (let x = 11; x <= 21; x++) setpx(x, y, 30, 8, 8);
+      break;
+    }
+    // ── Level 188 hotel textures ──────────────────────────────────────────────
+    case 'level188_lid': {
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const n = noise(10);
+        const seam = (x % 8 === 0 || y % 8 === 0) ? -8 : 0;
+        setpx(x, y, 156 + n + seam, 152 + n + seam, 142 + n + seam);
+      }
+      break;
+    }
+    case 'level188_floor_turf': {
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const n = noise(28);
+        setpx(x, y, 34 + n, 120 + n, 28 + n);
+      }
+      break;
+    }
+    case 'level188_floor_path': {
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const seam = (x % 8 === 0 || y % 8 === 0) ? -14 : 0;
+        const n = noise(12);
+        setpx(x, y, 195 + n + seam, 182 + n + seam, 155 + n + seam);
+      }
+      break;
+    }
+    case 'level188_floor_center': {
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const n = noise(14);
+        setpx(x, y, 88 + n, 78 + n, 68 + n);
+      }
+      break;
+    }
+    case 'level188_hall_floor': {
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const n = noise(8);
+        const seam = (x % 8 === 0 || y % 8 === 0) ? -13 : 0;
+        setpx(x, y, 176 + n + seam, 170 + n + seam, 158 + n + seam);
+      }
+      break;
+    }
+    case 'level188_wall_a': {
+      // Off-white stucco with central punched-hole window inset
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const frame = (x < 2 || x > 29 || y < 2 || y > 29) ? -30 : 0;
+        const pane  = (x >= 8 && x <= 23 && y >= 8 && y <= 23) ? -65 : 0;
+        const glare = (pane && (x + y) % 9 < 2) ? 28 : 0;
+        const n = noise(10);
+        setpx(x, y, 208+n+frame+pane+glare, 198+n+frame+pane+glare, 182+n+frame+pane+Math.floor(glare*0.6));
+      }
+      break;
+    }
+    case 'level188_wall_b': {
+      // Lighter concrete with wide landscape window + horizontal bands
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const band  = (y === 0 || y === 31) ? -24 : 0;
+        const frame = (x < 2 || x > 29) ? -20 : 0;
+        const pane  = (x >= 3 && x <= 28 && y >= 11 && y <= 20) ? -60 : 0;
+        const glare = (pane && (x * 3 + y) % 11 < 2) ? 32 : 0;
+        const n = noise(8);
+        setpx(x, y, 220+n+band+frame+pane+glare, 215+n+band+frame+pane+glare, 205+n+band+frame+pane+Math.floor(glare*0.5));
+      }
+      break;
+    }
+    case 'level188_hall_wall': {
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const n = noise(7);
+        const panel = (x === 0 || y === 0) ? -10 : 0;
+        setpx(x, y, 210 + n + panel, 206 + n + panel, 196 + n + panel);
+      }
+      break;
+    }
+    case 'level188_win_warm': {
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++)
+        setpx(x, y, 255, 210, 110);
+      break;
+    }
+    case 'level188_win_cold': {
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++)
+        setpx(x, y, 240, 248, 255);
+      break;
+    }
+    case 'level188_win_dark': {
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const frame = (x < 3 || x > 28 || y < 3 || y > 28) ? 0 : 22;
+        const stripe = (x % 7 < 2) ? -8 : 0;
+        setpx(x, y, 14 + frame + stripe, 18 + frame + stripe, 20 + frame + stripe);
+      }
+      break;
+    }
+    case 'level188_railing': {
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++)
+        setpx(x, y, 52, 58, 72);
+      break;
+    }
     case 'woodendeck':
     case 'fence': {
       for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
@@ -1371,7 +1676,11 @@ function generateFallbackTexture(type) {
 function setupInput() {
   document.addEventListener('keydown', e => {
     const k = e.key.toLowerCase();
-    if ((k === 'e' || k === 'enter') && typeof g_gs !== 'undefined' && (g_gs.vnOpen || g_gs.signOpen)) {
+    if (e.code === 'Space') {
+      if (!e.repeat) g_jumpQueued = true;
+      e.preventDefault();
+    }
+    if (!g_paused && (k === 'e' || k === 'enter') && typeof g_gs !== 'undefined' && (g_gs.vnOpen || g_gs.signOpen)) {
       e.preventDefault();
       e.stopImmediatePropagation();
       g_keys[k] = false;
@@ -1389,7 +1698,6 @@ function setupInput() {
     }
     g_keys[k] = true;
     if (e.key === 'Shift') g_keys['shift'] = true;
-    if (e.key === ' ') e.preventDefault();
   });
   document.addEventListener('keyup',   e => {
     const k = e.key.toLowerCase();
@@ -1462,6 +1770,7 @@ function onMouseMove(e) {
 }
 
 function onMouseDown(e) {
+  if (g_paused) return;
   if (document.pointerLockElement !== canvas) return;
   if (e.button !== 0 && e.button !== 2) return;
   if (typeof g_gs !== 'undefined' && g_gs.signOpen && typeof closeBackroomsSign === 'function') {
@@ -1603,15 +1912,42 @@ function getInteractionTargetCell() {
 
 const PLAYER_RADIUS = 0.3;
 
+function getMapHeightAtCell(x, z) {
+  if (x < 0 || x >= MAP_SIZE || z < 0 || z >= MAP_SIZE) return WALL_H;
+  return (g_Map[x] && typeof g_Map[x][z] === 'number') ? g_Map[x][z] : 0;
+}
+
+function getFloorHeightAt(x, z, eyeY) {
+  if (g_currentLevel === LEVEL_188 && typeof level188FloorHeightAt === 'function') {
+    return level188FloorHeightAt(x, z, eyeY);
+  }
+  return Math.max(0, getMapHeightAtCell(Math.floor(x), Math.floor(z)));
+}
+
+function canPlayerOccupyCell(x, z, currentFloorHeight, eyeY) {
+  if (x < 0 || x >= MAP_SIZE || z < 0 || z >= MAP_SIZE) return false;
+  const targetHeight = getMapHeightAtCell(x, z);
+  if (g_currentLevel === LEVEL_188) {
+    const targetFloor = getFloorHeightAt(x + 0.5, z + 0.5, eyeY);
+    const footY = (typeof eyeY === 'number') ? eyeY - PLAYER_EYE_HEIGHT : currentFloorHeight;
+    if (targetFloor <= 0.05 && typeof level188HasGroundAt === 'function' && !level188HasGroundAt(x + 0.5, z + 0.5)) return false;
+    if (targetFloor - currentFloorHeight > 0.85) return false;
+    if (typeof level188HasBlockerAt === 'function' && level188HasBlockerAt(x + 0.5, z + 0.5, footY, PLAYER_EYE_HEIGHT)) return false;
+    return true;
+  }
+  return !isWorldBlockedCell(x, z);
+}
+
 function isBlockedAt(x, z) {
   const r = PLAYER_RADIUS;
   const corners = [[x+r, z+r], [x+r, z-r], [x-r, z+r], [x-r, z-r]];
+  const e = camera.eye.elements;
+  const currentFloorHeight = getFloorHeightAt(e[0], e[2], e[1]);
+  const footY = e[1] - PLAYER_EYE_HEIGHT;
   for (const [cx, cz] of corners) {
     const bx = Math.floor(cx), bz = Math.floor(cz);
-    if (bx < 0 || bx >= MAP_SIZE || bz < 0 || bz >= MAP_SIZE) return true;
-    if (typeof isWorldBlockedCell === 'function') {
-      if (isWorldBlockedCell(bx, bz)) return true;
-    } else if (g_Map[bx][bz] > 0) return true;
+    if (!canPlayerOccupyCell(bx, bz, currentFloorHeight, e[1])) return true;
+    if (g_currentLevel === LEVEL_188 && typeof level188HasBlockerAt === 'function' && level188HasBlockerAt(cx, cz, footY, PLAYER_EYE_HEIGHT)) return true;
   }
 
   if (typeof g_FurnitureSlots !== 'undefined') {
@@ -1622,6 +1958,32 @@ function isBlockedAt(x, z) {
     }
   }
   return false;
+}
+
+function applyPlayerVerticalPhysics(dt) {
+  if (!camera) return;
+  const e = camera.eye.elements;
+  const floorHeight = getFloorHeightAt(e[0], e[2], e[1]);
+  const targetY = floorHeight + PLAYER_EYE_HEIGHT;
+
+  if (g_jumpQueued && camera.isGrounded) {
+    camera.yVelocity = JUMP_VELOCITY;
+    camera.isGrounded = false;
+  }
+  g_jumpQueued = false;
+
+  camera.yVelocity += GRAVITY_ACCEL * dt;
+  e[1] += camera.yVelocity * dt;
+
+  if (e[1] <= targetY) {
+    e[1] = targetY;
+    camera.yVelocity = 0;
+    camera.isGrounded = true;
+  } else {
+    camera.isGrounded = false;
+  }
+  g_baseEyeY = targetY;
+  camera.updateViewMatrix();
 }
 
 function tryMove(dx, dz) {
@@ -1647,29 +2009,41 @@ function processInput(dt) {
   if (my !== 0) camera.lookVertical(-my * sensitivity);
 
   if (typeof isNarrativeMovementLocked === 'function' && isNarrativeMovementLocked()) {
+    g_jumpQueued = false;
     g_isSprinting = false;
     g_sprint = Math.min(1, g_sprint + SPRINT_REGEN * dt);
     camera.updateViewMatrix();
     return;
   }
 
-  const wantSprint = (g_keys['shift'] === true) && !g_sprintLocked && g_sprint > 0.0;
+  const level188NoSprintLimiter = (typeof LEVEL_188 !== 'undefined') && g_currentLevel === LEVEL_188;
+  if (level188NoSprintLimiter) {
+    g_sprint = 1.0;
+    g_sprintLocked = false;
+  }
+
+  const wantSprint = (g_keys['shift'] === true) && (level188NoSprintLimiter || (!g_sprintLocked && g_sprint > 0.0));
   const moving     = (g_keys['w'] || g_keys['a'] || g_keys['s'] || g_keys['d']);
 
-  if (wantSprint && moving && (g_isSprinting || g_sprint > SPRINT_MIN)) {
+  if (wantSprint && moving && (level188NoSprintLimiter || g_isSprinting || g_sprint > SPRINT_MIN)) {
     g_isSprinting = true;
-    g_sprint = Math.max(0, g_sprint - SPRINT_DRAIN * dt);
-    if (g_sprint <= 0) {
-      g_isSprinting  = false;
-      g_sprintLocked = true;
+    if (!level188NoSprintLimiter) {
+      g_sprint = Math.max(0, g_sprint - SPRINT_DRAIN * dt);
+      if (g_sprint <= 0) {
+        g_isSprinting  = false;
+        g_sprintLocked = true;
+      }
     }
   } else {
     g_isSprinting = false;
-    g_sprint = Math.min(1, g_sprint + SPRINT_REGEN * dt);
-    if (g_sprintLocked && g_sprint >= 1.0) g_sprintLocked = false;
+    if (!level188NoSprintLimiter) {
+      g_sprint = Math.min(1, g_sprint + SPRINT_REGEN * dt);
+      if (g_sprintLocked && g_sprint >= 1.0) g_sprintLocked = false;
+    }
   }
 
-  const baseSpd = g_isSprinting ? 5.0 * SPRINT_MULT : 5.0;
+  const walkSpeed = 5.0 * (g_unlimitedMode ? UNLIMITED_PLAYER_SPEED_MULT : 1.0);
+  const baseSpd = g_isSprinting ? walkSpeed * SPRINT_MULT : walkSpeed;
   const spd     = baseSpd * dt;
   const rotSpd  = 60 * dt;
   const [fx, , fz] = camera._flatFwd();
@@ -1686,10 +2060,8 @@ function processInput(dt) {
   if (g_keys['q']) camera.panLeft(rotSpd);
   if (g_keys['e']) camera.panRight(rotSpd);
 
-  const e = camera.eye.elements;
   if (dx !== 0 || dz !== 0) {
     g_walkPhase += BOB_FREQ * dt * (g_isSprinting ? 1.4 : 1.0);
-    e[1] = g_baseEyeY + Math.sin(g_walkPhase) * BOB_AMP;
     g_playerStepCD -= dt;
     if (g_playerStepCD <= 0 && g_smallFootBufs.length > 0) {
       g_playerStepCD = g_isSprinting ? 0.32 : 0.46;
@@ -1697,11 +2069,10 @@ function processInput(dt) {
       playBuf(g_smallFootBufs[idx], VOL_FOOTSTEP_PLAYER * g_masterVolume);
     }
   } else {
-
-    e[1] += (g_baseEyeY - e[1]) * Math.min(1, dt * 8);
     g_playerStepCD = 0;
   }
   camera.updateViewMatrix();
+  checkUnlimitedDoorReached();
 }
 
 function formatSpeedrunTime(seconds) {
@@ -1721,6 +2092,8 @@ var g_lastTimerText = '';
 var g_lastTimerDanger = false;
 var g_lastSpeedrunText = '';
 var g_lastSpeedrunShown = false;
+var g_lastUnlimitedScoreText = '';
+var g_lastUnlimitedScoreShown = false;
 var g_lastSanityWidth = '';
 var g_lastSanityBg = '';
 var g_lastSprintWidth = '';
@@ -1733,6 +2106,7 @@ function getHudEls() {
     g_hudEls = {
       timer: document.getElementById('timer'),
       speedrun: document.getElementById('speedrunTimer'),
+      unlimitedScore: document.getElementById('unlimitedScore'),
       sanityFill: document.getElementById('sanityFill'),
       sprintFill: document.getElementById('sprintFill'),
     };
@@ -1748,13 +2122,31 @@ function updateHUD() {
   const timerEl = hud.timer;
   const timerText = mm + ':' + ss;
   const timerDanger = secs < 10;
-  if (timerEl && timerText !== g_lastTimerText) {
-    timerEl.textContent = timerText;
-    g_lastTimerText = timerText;
+  if (timerEl) {
+    const hideTimer = (g_unlimitedMode || g_memeMode) && g_started;
+    timerEl.style.display = hideTimer ? 'none' : '';
+    if (!hideTimer && timerText !== g_lastTimerText) {
+      timerEl.textContent = timerText;
+      g_lastTimerText = timerText;
+    }
+    if (!hideTimer && timerDanger !== g_lastTimerDanger) {
+      timerEl.className = timerDanger ? 'danger' : '';
+      g_lastTimerDanger = timerDanger;
+    }
   }
-  if (timerEl && timerDanger !== g_lastTimerDanger) {
-    timerEl.className = timerDanger ? 'danger' : '';
-    g_lastTimerDanger = timerDanger;
+
+  const unlimitedScoreEl = hud.unlimitedScore;
+  if (unlimitedScoreEl) {
+    const showUnlimitedScore = g_unlimitedMode && g_started;
+    const scoreText = 'SCORE ' + g_unlimitedScore;
+    if (showUnlimitedScore && scoreText !== g_lastUnlimitedScoreText) {
+      unlimitedScoreEl.textContent = scoreText;
+      g_lastUnlimitedScoreText = scoreText;
+    }
+    if (showUnlimitedScore !== g_lastUnlimitedScoreShown) {
+      unlimitedScoreEl.classList.toggle('show', showUnlimitedScore);
+      g_lastUnlimitedScoreShown = showUnlimitedScore;
+    }
   }
 
   const speedrunEl = hud.speedrun;
@@ -1853,25 +2245,75 @@ function setupTitleScreen() {
   const startBtn = document.getElementById('startBtn');
   const flickerCb = document.getElementById('disableFlicker');
   const perfCb = document.getElementById('performanceMode');
+  const optionsBtn = document.getElementById('optionsMenuBtn');
+  const optionsWrap = document.getElementById('optionsMenuWrap');
+  const unlimitedBtn = document.getElementById('unlimitedToggleBtn');
+  const memeCb = document.getElementById('memeModeCb');
   if (!overlay || !startBtn) return;
+
+  if (optionsBtn) {
+    optionsBtn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      setOptionsMenuOpen(!(optionsWrap && optionsWrap.classList.contains('open')));
+    });
+  }
+
+  if (unlimitedBtn) {
+    unlimitedBtn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (canToggleStartOptions()) setUnlimitedMode(!g_unlimitedMode);
+      setOptionsMenuOpen(false);
+      startBtn.focus();
+    });
+  }
+
+  if (memeCb) {
+    memeCb.addEventListener('change', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (canToggleStartOptions()) setMemeMode(memeCb.checked);
+      setOptionsMenuOpen(false);
+      startBtn.focus();
+    });
+  }
+
+  document.addEventListener('click', (ev) => {
+    if (optionsWrap && !optionsWrap.contains(ev.target)) setOptionsMenuOpen(false);
+  });
+
+  refreshModeMenuLabels();
 
   if (perfCb) {
     perfCb.addEventListener('change', () => setPerformanceMode(perfCb.checked));
   }
 
-  startBtn.addEventListener('click', (ev) => {
+  function beginFromTitle(ev) {
     ev.preventDefault();
     ev.stopPropagation();
+    if (g_started) return;
+    setOptionsMenuOpen(false);
     g_flickerEnabled = !(flickerCb && flickerCb.checked);
     setPerformanceMode(!!(perfCb && perfCb.checked));
     overlay.classList.remove('active');
     overlay.style.display = 'none';
     g_speedrunTime = 0;
     g_speedrunFinished = false;
+    g_gameOver = false;
+    g_gameWon = false;
+    g_memeAudioActive = false;
+    g_lastSpeedrunShown = false;
+    g_lastUnlimitedScoreShown = false;
+    g_lastUnlimitedScoreText = '';
     const speedrunEl = document.getElementById('speedrunTimer');
     if (speedrunEl) speedrunEl.classList.remove('show');
+    const unlimitedScoreEl = document.getElementById('unlimitedScore');
+    if (unlimitedScoreEl) unlimitedScoreEl.classList.remove('show');
     g_started = true;
-    if (typeof startNarrativeSequence === 'function') startNarrativeSequence();
+    if (g_memeMode) startMemeRun();
+    else if (g_unlimitedMode) startUnlimitedRun();
+    else if (typeof startNarrativeSequence === 'function') startNarrativeSequence();
     try { if (g_audioCtx && g_audioCtx.state === 'suspended') g_audioCtx.resume(); }
     catch (e) { console.log('audio resume failed:', e.message); }
     try { initAudioFiles(); } catch (e) { console.log('audio init failed:', e.message); }
@@ -1880,6 +2322,16 @@ function setupTitleScreen() {
       const p = canvas.requestPointerLock();
       if (p && p.catch) p.catch(err => console.log('pointer lock blocked:', err.message));
     } catch (e) { console.log('pointer lock failed:', e.message); }
+    refreshModeMenuLabels();
+  }
+
+  startBtn.addEventListener('click', beginFromTitle);
+
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Enter' || !canToggleStartOptions()) return;
+    const tag = ev.target && ev.target.tagName ? ev.target.tagName.toLowerCase() : '';
+    if (tag === 'button' || tag === 'input' || tag === 'a') return;
+    beginFromTitle(ev);
   });
 }
 
@@ -1957,6 +2409,14 @@ function applyLevelFogSettings() {
   if (typeof g_currentLevel !== 'undefined' && typeof LEVEL_SUBURBS !== 'undefined' && g_currentLevel === LEVEL_SUBURBS) {
     const near = g_performanceMode ? SUBURB_PERF_FOG_NEAR : SUBURB_FOG_NEAR;
     const far  = g_performanceMode ? SUBURB_PERF_FOG_FAR  : SUBURB_FOG_FAR;
+    if (u_fogNear) gl.uniform1f(u_fogNear, near);
+    if (u_fogFar)  gl.uniform1f(u_fogFar,  far);
+    if (u_fogColor && typeof g_skyColor !== 'undefined') gl.uniform3f(u_fogColor, g_skyColor[0], g_skyColor[1], g_skyColor[2]);
+    return;
+  }
+  if (typeof g_currentLevel !== 'undefined' && typeof LEVEL_188 !== 'undefined' && g_currentLevel === LEVEL_188) {
+    const near = g_performanceMode ? LEVEL188_FOG_NEAR * 0.65 : LEVEL188_FOG_NEAR;
+    const far  = g_performanceMode ? LEVEL188_FOG_FAR  * 0.65 : LEVEL188_FOG_FAR;
     if (u_fogNear) gl.uniform1f(u_fogNear, near);
     if (u_fogFar)  gl.uniform1f(u_fogFar,  far);
     if (u_fogColor && typeof g_skyColor !== 'undefined') gl.uniform3f(u_fogColor, g_skyColor[0], g_skyColor[1], g_skyColor[2]);

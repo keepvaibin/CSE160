@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>The Backrooms: Entity Survival - CSE 160 Asgn 3</title>
+  <link rel="preload" href="/fonts/Paintdrips-browser.ttf" as="font" type="font/ttf" crossorigin>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -79,13 +80,74 @@
       border-bottom: 1px solid #808080;
       background: #d4d0c8;
       font: 12px Tahoma, "MS Sans Serif", sans-serif;
+      position: relative;
+      z-index: 500;
+    }
+    .win95-menu-wrap {
+      position: relative;
+      height: 100%;
+      display: flex;
+      align-items: center;
     }
     .win95-menu-item {
       padding: 2px 8px;
+      background: transparent;
+      border: 0;
+      color: inherit;
+      font: inherit;
+      line-height: 16px;
+      cursor: default;
     }
-    .win95-menu-item:hover {
+    .win95-menu-item:hover,
+    .win95-menu-item:focus,
+    .win95-menu-wrap.open > .win95-menu-item {
       background: #000080;
       color: #fff;
+      outline: none;
+    }
+    .win95-dropdown {
+      position: absolute;
+      left: 0;
+      top: 20px;
+      min-width: 150px;
+      padding: 2px;
+      display: none;
+      background: #d4d0c8;
+      border: 1px solid #808080;
+      box-shadow: inset 1px 1px 0 #ffffff, inset -1px -1px 0 #404040, 2px 2px 0 #000000;
+      z-index: 510;
+    }
+    .win95-menu-wrap.open .win95-dropdown { display: block; }
+    .win95-dropdown-item {
+      width: 100%;
+      padding: 3px 18px 3px 8px;
+      text-align: left;
+      background: transparent;
+      border: 0;
+      color: #000;
+      font: 12px Tahoma, "MS Sans Serif", sans-serif;
+      line-height: 16px;
+      white-space: nowrap;
+      cursor: default;
+    }
+    .win95-dropdown-item:hover,
+    .win95-dropdown-item:focus {
+      background: #000080;
+      color: #fff;
+      outline: none;
+    }
+    .win95-dropdown-item.disabled {
+      color: #808080;
+    }
+    .win95-check-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .win95-check-item input {
+      width: 13px;
+      height: 13px;
+      margin: 0;
     }
     #gameViewport {
       box-sizing: content-box;
@@ -135,6 +197,15 @@
       text-shadow: 0 0 14px rgba(255,48,48,0.7);
       animation: timerFlicker 0.4s ease-in-out infinite alternate;
     }
+    #unlimitedScore {
+      position: absolute; top: 8px; right: 10px;
+      display: none;
+      font-size: 13px;
+      letter-spacing: 2px;
+      color: rgba(245,216,58,0.95);
+      text-shadow: 0 1px 3px rgba(0,0,0,0.95), 0 0 8px rgba(0,0,0,0.75);
+    }
+    #unlimitedScore.show { display: block; }
     @keyframes timerFlicker {
       from { opacity: 1.0; }
       to   { opacity: 0.55; }
@@ -243,8 +314,9 @@
       text-shadow: 0 0 20px #c8b85a;
     }
     #winScreen p { font-size: 15px; color: #999; margin-top: 14px; }
+    #finalUnlimitedScore:empty { display: none; }
 
-    #pauseScreen { background: rgba(0,0,0,0.82); }
+    #pauseScreen { background: rgba(0,0,0,0.82); z-index: 2000; }
 
     #pauseScreen.active { pointer-events: auto; }
     #pauseScreen h1 {
@@ -386,12 +458,21 @@
         <span class="win95-title-button">&#215;</span>
       </div>
     </div>
-    <div class="win95-menubar" aria-hidden="true">
+    <div class="win95-menubar">
       <span class="win95-menu-item">File</span>
       <span class="win95-menu-item">Edit</span>
       <span class="win95-menu-item">View</span>
       <span class="win95-menu-item">Image</span>
-      <span class="win95-menu-item">Options</span>
+      <div class="win95-menu-wrap" id="optionsMenuWrap">
+        <button class="win95-menu-item" id="optionsMenuBtn" type="button" aria-haspopup="true" aria-expanded="false">Options</button>
+        <div class="win95-dropdown" id="optionsMenuDropdown" role="menu">
+          <button class="win95-dropdown-item" id="unlimitedToggleBtn" type="button" role="menuitem">Unlimited: False</button>
+          <label class="win95-dropdown-item win95-check-item" for="memeModeCb" role="menuitemcheckbox" style="display:none">
+            <input type="checkbox" id="memeModeCb">
+            <span>Level 188 Meme Mode</span>
+          </label>
+        </div>
+      </div>
       <span class="win95-menu-item">Help</span>
     </div>
     <div id="gameViewport">
@@ -400,8 +481,9 @@
       <div id="fps">FPS: --</div>
       <div id="objectiveHUD">Objective: Tend to your garden</div>
       <div id="speedrunTimer">RUN 00:00.00</div>
+      <div id="unlimitedScore">SCORE 0</div>
       <div id="timer">02:00</div>
-      <div id="objective">HE IS ALWAYS WATCHING. FIND THE EXIT.</div>
+      <div id="objective">Time until he gets faster.</div>
       <div id="crosshair"></div>
       <div id="sanityContainer">
         <div id="sanityLabel">PROXIMITY</div>
@@ -422,6 +504,7 @@
       <div id="loseScreen" class="overlay">
       <h1>IT GOT YOU</h1>
       <p>You heard it. You felt it. Then nothing.</p>
+      <p id="finalUnlimitedScore"></p>
       <p style="margin-top:28px;color:#444;font-size:11px;">Refresh to try again</p>
       </div>
       <div id="winScreen" class="overlay">
@@ -532,6 +615,7 @@ HE FOLLOWS YOU EVERYWHERE</div>
       </div>
     </div>
   </div>
+  <audio id="memeAudio" src="audio/chase.wav" preload="auto" loop></audio>
 
   <script src="lib/cuon-matrix-cse160.js"></script>
   <script src="webgl-utils.js"></script>

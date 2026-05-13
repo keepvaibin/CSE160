@@ -1,8 +1,9 @@
 @font-face {
   font-family: 'Paintdrips';
-  src: url('fonts/Paintdrips-vZaD.ttf') format('truetype');
+  src: url('/fonts/Paintdrips-browser.ttf') format('truetype');
   font-weight: normal;
   font-style: normal;
+  font-display: block;
 }
 
 #fadeOverlay {
@@ -137,6 +138,13 @@ body.game-fullscreen #webgl {
   opacity: 1;
   pointer-events: auto;
 }
+#pauseScreen.active ~ #vnBox,
+#pauseScreen.active ~ #controlsToast,
+#pauseScreen.active ~ #inventorySlot,
+#pauseScreen.active ~ #signPopup {
+  visibility: hidden;
+  pointer-events: none;
+}
 #vnAuthor {
   position: absolute;
   top: -18px;
@@ -242,11 +250,12 @@ body.game-fullscreen #webgl {
 #signText {
   font-family: 'Paintdrips', 'Courier New', monospace;
   width: 100%;
-  font-size: 42px;
-  line-height: 1.22;
+  font-size: clamp(32px, 7vw, 54px);
+  line-height: 1.08;
   letter-spacing: 0;
-  color: #240d08;
-  text-shadow: 1px 1px 0 rgba(120,0,0,.2);
+  color: #160604;
+  -webkit-text-stroke: 0.7px rgba(90, 0, 0, 0.45);
+  text-shadow: 1px 1px 0 rgba(120,0,0,.28), 0 2px 0 rgba(70,0,0,.12);
   white-space: pre-line;
   text-align: center;
 }
@@ -256,7 +265,7 @@ body.game-fullscreen #webgl {
   color: #f3e4b6;
   border: 2px solid #4a2c13;
   padding: 10px 28px;
-  font: 18px 'Paintdrips', 'Courier New', monospace;
+  font: 18px Impact, 'Arial Black', sans-serif;
   letter-spacing: 0;
   pointer-events: auto;
   cursor: pointer;

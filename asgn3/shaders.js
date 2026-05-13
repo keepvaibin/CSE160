@@ -143,7 +143,9 @@ void main() {
   }
 
   float fogFactor = clamp((v_Dist - u_fogNear) / (u_fogFar - u_fogNear), 0.0, 1.0);
-  float outAlpha  = (u_texColorWeight < 0.5) ? u_baseColor.a : ((u_whichTexture == 4) ? texColor.a : 1.0);
-  gl_FragColor = vec4(mix(lit, u_fogColor, fogFactor), outAlpha);
+  vec3 finalColor = mix(lit, u_fogColor, fogFactor);
+  float outAlpha = (u_texColorWeight < 0.5) ? u_baseColor.a
+                 : ((u_whichTexture == 4 || u_whichTexture == 5) ? texColor.a : 1.0);
+  gl_FragColor = vec4(finalColor, outAlpha);
 }
 `;

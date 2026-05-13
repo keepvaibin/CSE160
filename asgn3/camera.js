@@ -7,6 +7,8 @@ class Camera {
     this.fov   = 70;
     this.yaw   = 0;
     this.pitch = 0;
+    this.yVelocity = 0;
+    this.isGrounded = true;
 
     const sx = (typeof SPAWN_X !== 'undefined') ? SPAWN_X : 3.5;
     const sz = (typeof SPAWN_Z !== 'undefined') ? SPAWN_Z : 32.5;

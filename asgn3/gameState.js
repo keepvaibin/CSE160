@@ -53,8 +53,17 @@ var g_gs = {
 function _el(id) { return document.getElementById(id); }
 
 function setupGameStateUI() {
+  if (document.fonts && document.fonts.load) document.fonts.load('54px Paintdrips').catch(()=>{});
+
   const vn = _el('vnBox');
-  if (vn) vn.addEventListener('click', hideVN);
+  if (vn) vn.addEventListener('click', (e) => {
+    if (typeof g_paused !== 'undefined' && g_paused) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    hideVN();
+  });
 
   const closeBtn = _el('signCloseBtn');
   if (closeBtn) {
@@ -67,6 +76,7 @@ function setupGameStateUI() {
 
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'e' && e.key !== 'E' && e.key !== 'Enter') return;
+    if (typeof g_paused !== 'undefined' && g_paused) return;
     if (g_gs.vnOpen) {
       e.preventDefault();
       hideVN();
@@ -158,7 +168,7 @@ function setPhase(phase) {
     g_gs.controlsDismissTimer = -1;
   } else if (phase === GAME_PHASE.WALK_TO_HOUSE) {
     setObjective('Head home');
-    showControlsToast('HOME', 'Go through the front door');
+    showControlsToast('HOME', 'Step onto the balcony');
     g_gs.controlsDismissTimer = -1;
   } else if (phase === GAME_PHASE.BACKROOMS_TRAPPED) {
     document.body.classList.remove('level-suburbs');
@@ -195,6 +205,45 @@ function hideFade() {
   const fadeText = _el('fadeText');
   if (fadeText) fadeText.classList.remove('show');
   if (overlay) overlay.classList.remove('active');
+}
+
+function isSuburbBalconyFloorAt(worldX, worldZ) {
+  if (typeof g_currentLevel === 'undefined' || g_currentLevel !== LEVEL_SUBURBS) return false;
+  if (typeof g_SuburbFloorTex === 'undefined' || !g_SuburbFloorTex.length) return false;
+  const radius = 0.28;
+  const samples = [
+    [worldX, worldZ],
+    [worldX + radius, worldZ + radius],
+    [worldX + radius, worldZ - radius],
+    [worldX - radius, worldZ + radius],
+    [worldX - radius, worldZ - radius],
+  ];
+  for (const sample of samples) {
+    const cellX = Math.floor(sample[0]);
+    const cellZ = Math.floor(sample[1]);
+    if (cellX < 0 || cellZ < 0 || cellX >= MAP_SIZE || cellZ >= MAP_SIZE) continue;
+    if (g_SuburbFloorTex[cellX] && g_SuburbFloorTex[cellX][cellZ] === 'woodendeck.png') return true;
+  }
+  return false;
+}
+
+function beginSuburbBalconyFall() {
+  if (g_gs.phase === GAME_PHASE.FALLING) return;
+  hideFade();
+  const fadeText = _el('fadeText');
+  if (fadeText) {
+    fadeText.textContent = '';
+    fadeText.classList.remove('show');
+  }
+  hideControlsToast();
+  hideVN();
+  setPhase(GAME_PHASE.FALLING);
+  g_gs.fallStarted = true;
+  g_gs.stateTime = 0;
+  if (typeof camera !== 'undefined' && camera) {
+    camera.yVelocity = 0;
+    camera.isGrounded = false;
+  }
 }
 
 function showControlsToast(title, html) {
@@ -361,7 +410,12 @@ function canMoveToNarrative(nx, nz) {
 
   if (g_currentLevel === 1) {
 
-    if (nz >= 14.15 && nx >= 12.0 && nx <= 19.0 && g_gs.phase !== GAME_PHASE.WALK_TO_HOUSE) {
+    const touchingBalcony = isSuburbBalconyFloorAt(nx, nz);
+    if (touchingBalcony && g_gs.phase === GAME_PHASE.WALK_TO_HOUSE) {
+      beginSuburbBalconyFall();
+      return true;
+    }
+    if (touchingBalcony && g_gs.phase !== GAME_PHASE.WALK_TO_HOUSE) {
       if (g_gs.phase === GAME_PHASE.TUTORIAL_RETURN_CAN) {
         setObjective('Return the watering can');
         g_gs.returnWarningShown = true;
@@ -496,9 +550,12 @@ function activateBackroomsEntity() {
   g_entityActive = true;
   if (typeof g_entity !== 'undefined') {
     g_entity.x = ENTITY_SPAWN_X;
+    if (typeof g_entity.y !== 'undefined') g_entity.y = 0;
     g_entity.z = ENTITY_SPAWN_Z;
     g_entity.vx = 0;
     g_entity.vz = 0;
+    if (typeof g_entity.yVelocity !== 'undefined') g_entity.yVelocity = 0;
+    if (typeof g_entity.isGrounded !== 'undefined') g_entity.isGrounded = true;
     g_entity.hasLOS = false;
     g_entity.inChase = false;
     g_entity.pathRecalcTimer = 0;
@@ -557,24 +614,27 @@ function updateGameState(dt) {
 
   if (g_gs.phase === GAME_PHASE.WALK_TO_HOUSE) {
     const e = camera.eye.elements;
-    if (e[2] >= 16.65 && e[0] >= 13.0 && e[0] <= 18.5) {
-      setPhase(GAME_PHASE.FALLING);
-      showFade('', false);
-      g_gs.fallStarted = true;
-      g_gs.stateTime = 0;
-    }
+    if (isSuburbBalconyFloorAt(e[0], e[2])) beginSuburbBalconyFall();
   }
 
   if (g_gs.phase === GAME_PHASE.FALLING) {
     const e = camera.eye.elements;
-    e[1] = Math.max(-9.0, e[1] - 8.5 * dt);
-    camera.pitch = Math.max(-65, camera.pitch - 25 * dt);
+    // Accelerate downward so the player visually falls through the floor
+    const fallAccel = g_gs.stateTime < 0.3 ? 4.0 : 18.0; // slow start, then fast
+    e[1] = Math.max(-22.0, e[1] - fallAccel * dt);
+    camera.pitch = Math.max(-85, camera.pitch - 30 * dt);
     camera.updateViewMatrix();
-    if (g_gs.stateTime > 0.25) {
+    // Fade to black only after ~0.8 s so the fall is visible
+    if (g_gs.stateTime > 0.8) {
       const overlay = _el('fadeOverlay');
+      const fadeText = _el('fadeText');
+      if (fadeText) {
+        fadeText.textContent = '';
+        fadeText.classList.remove('show');
+      }
       if (overlay) overlay.classList.add('active');
     }
-    if (g_gs.stateTime > 1.65) {
+    if (g_gs.stateTime > 1.8) {
       scrubLevel1UIForBackrooms();
       try {
         if (typeof loadLevel === 'function') loadLevel(2);
